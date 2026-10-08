@@ -77,6 +77,69 @@ contract DCAVaultSecurityTest is VaultTestBase {
         vm.stopPrank();
     }
 
+    /// @dev Pool entries are keyed by the stable: after ChangeStableToken, no old (token, fee, tickSpacing) entry
+    ///      unlocks the (newStable, token) pool — one nobody vetted and an operator key could create & seed itself.
+    function test_Security_ChangeStableTokenDropsOldPoolEntries() public {
+        MockERC20 newStable = new MockERC20("New USD", "NUSD", 18);
+        MockMorphoVault newVault = _newMorphoVault(newStable);
+        _passProposal(
+            DCAVaultStorage.ProposalType.ChangeStableToken, abi.encode(address(newStable), address(newVault), treasury)
+        );
+        assertEq(vault.stableToken(), address(newStable));
+        assertFalse(vault.allowedPool(address(weth), FEE_LOW, 0), "old V3 entry must not carry over");
+        assertFalse(vault.allowedPool(address(weth), FEE_LOW, TS_LOW), "old V4 entry must not carry over");
+
+        vm.startPrank(operator);
+        vm.expectRevert(DCAVaultStorage.PoolNotAllowed.selector);
+        vault.swapExactInputV3(address(weth), address(newStable), FEE_LOW, 1 ether, 1, block.timestamp);
+        vm.expectRevert(DCAVaultStorage.PoolNotAllowed.selector);
+        vault.swapExactInputV4(address(weth), address(newStable), FEE_LOW, TS_LOW, 1 ether, 1, block.timestamp);
+        vm.stopPrank();
+
+        // Signers re-vet and whitelist the pool for the new stable explicitly (no Duplicate from the old entry).
+        // Next block: proposals created in the switch's own block are expired too (`stableChangedAt`).
+        vm.warp(block.timestamp + 1);
+        _passProposal(DCAVaultStorage.ProposalType.SetAllowedPool, abi.encode(address(weth), FEE_LOW, int24(0), true));
+        assertTrue(vault.allowedPool(address(weth), FEE_LOW, 0));
+        assertFalse(vault.allowedPool(address(weth), FEE_LOW, TS_LOW), "only the re-vetted entry is open");
+    }
+
+    /// @dev A proposal vetted against the old stable must never execute after ChangeStableToken: a pending
+    ///      SetAllowedPool would otherwise open the unvetted (newStable, token) pool, a pending ChangeMorphoVault
+    ///      would point the new stable at an old-stable vault. Fresh proposals still work.
+    function test_Security_ChangeStableTokenExpiresPendingProposals() public {
+        vm.startPrank(signer1);
+        uint256 stalePool = vault.proposeSetAllowedPool(address(weth), FEE_LOW, 1, true);
+        uint256 staleVault = vault.proposeChangeMorphoVault(address(_newMorphoVault(usdc)));
+        vm.stopPrank();
+
+        vm.warp(block.timestamp + 1 days);
+        MockERC20 newStable = new MockERC20("New USD", "NUSD", 18);
+        MockMorphoVault newVault = _newMorphoVault(newStable);
+        _passProposal(
+            DCAVaultStorage.ProposalType.ChangeStableToken, abi.encode(address(newStable), address(newVault), treasury)
+        );
+        assertEq(vault.stableChangedAt(), block.timestamp);
+
+        vm.startPrank(signer2);
+        vm.expectRevert(DCAVaultStorage.ProposalExpired.selector);
+        vault.approve(stalePool);
+        vm.expectRevert(DCAVaultStorage.ProposalExpired.selector);
+        vault.approve(staleVault);
+        vm.expectRevert(DCAVaultStorage.ProposalExpired.selector);
+        vault.reject(stalePool);
+        vm.stopPrank();
+        (,,,,,, bool expired) = vault.getProposal(stalePool);
+        assertTrue(expired, "view reports the stale proposal as expired");
+        assertFalse(vault.allowedPool(address(weth), FEE_LOW, 1));
+        assertEq(vault.morphoVault(), address(newVault));
+
+        // A proposal created after the switch is unaffected.
+        vm.warp(block.timestamp + 1);
+        _passProposal(DCAVaultStorage.ProposalType.SetAllowedPool, abi.encode(address(weth), FEE_LOW, int24(1), true));
+        assertTrue(vault.allowedPool(address(weth), FEE_LOW, 1));
+    }
+
     function test_Invariant1_OperatorCannotUseSignerFunctions() public {
         vm.startPrank(operator);
         vm.expectRevert(DCAVaultStorage.NotSigner.selector);

@@ -43,7 +43,7 @@ Sub-logics:
 
 ## 3. Pool whitelist (`allowedPool`) — shared with V4
 ### Purpose
-Pins every operator swap to a pool the signers picked. One entry = **one pool** = `(token, fee, tickSpacing)`; the other side is always `stableToken`:
+Pins every operator swap to a pool the signers picked. One entry = **one pool** = `(token, fee, tickSpacing)`; the other side is always `stableToken`. Entries are stored **per stable** (`_allowedPool[stable][token][fee][tickSpacing]`), so an entry only ever means the pool against the stable that was current when it was added:
 - `tickSpacing == V3_POOL` (0) → the Uniswap V3 pool (stable, token, fee). V3 has one pool per (pair, fee), so this is exact.
 - `tickSpacing >= 1` → the **hookless** V4 pool (stable, token, fee, tickSpacing). With `hooks = address(0)` hardcoded, this is exactly one V4 PoolId.
 
@@ -53,18 +53,19 @@ With independent fee and tick-spacing lists the operator could combine any allow
 ### Entry points
 - Constructor `_pools[]` (`PoolConfig{token, fee, tickSpacing}`; deploy script: env `POOL_TOKENS` / `POOL_FEES` / `POOL_TICK_SPACINGS`). Duplicate entry → `Duplicate`.
 - Proposal `SetAllowedPool(address token, uint24 fee, int24 tickSpacing, bool allowed)` / helper `proposeSetAllowedPool(...)` — `onlySigner`, threshold.
-- View: `allowedPool(token, fee, tickSpacing)`. There is **no on-chain list** (it would push the contract over the 24,576-byte EIP-170 limit); rebuild the full set from `PoolAllowed` events, e.g. `cast logs --address <vault> "PoolAllowed(address,uint24,int24,bool)" --from-block <deploy block>` or the basescan Events tab.
+- View: `allowedPool(token, fee, tickSpacing)` — always answers for the **current** `stableToken`. There is **no on-chain list** (it would push the contract over the 24,576-byte EIP-170 limit); rebuild the full set from `PoolAllowed(stable, token, fee, tickSpacing, allowed)` events, keeping only those whose `stable` is the current `stableToken`, e.g. `cast logs --address <vault> "PoolAllowed(address,address,uint24,int24,bool)" --from-block <deploy block>` or the basescan Events tab.
 ### Flow
 `_setAllowedPool`:
-- add (`allowed = true`): `_checkPoolConfig` → `token != stableToken` (`StableNotTradable`), `1 <= fee <= MAX_POOL_FEE (1_000_000)` (`InvalidFee`; also excludes the V4 dynamic-fee flag), `0 <= tickSpacing <= 32767` (`InvalidTickSpacing`), no V3 entry for native ETH (`NativeNotSupported`); not already listed (`Duplicate`) → set.
+- add (`allowed = true`): `_checkPoolConfig` → `token != stableToken` (`StableNotTradable`), `1 <= fee <= MAX_POOL_FEE (1_000_000)` (`InvalidFee`; also excludes the V4 dynamic-fee flag), `0 <= tickSpacing <= 32767` (`InvalidTickSpacing`), no V3 entry for native ETH (`NativeNotSupported`); not already listed under the current stable (`Duplicate`) → set.
 - remove (`allowed = false`): must be listed (`NotFound`) → unset.
-- emit `PoolAllowed(token, fee, tickSpacing, allowed)`.
+- emit `PoolAllowed(stableToken, token, fee, tickSpacing, allowed)`.
 `_checkPoolConfig` also runs at propose time for adds; `Duplicate` / `NotFound` are checked at execution.
-Swaps: V3 checks `allowedPool[token][fee][V3_POOL]`; V4 rejects `tickSpacing < 1` first (so the V3 marker 0 can never unlock a V4 swap), then checks `allowedPool[token][fee][tickSpacing]`. Both → `PoolNotAllowed`.
+Swaps: V3 checks `_allowedPool[stableToken][token][fee][V3_POOL]`; V4 rejects `tickSpacing < 1` first (so the V3 marker 0 can never unlock a V4 swap), then checks `_allowedPool[stableToken][token][fee][tickSpacing]`. Both → `PoolNotAllowed`.
 ### Security
 - The entry is per token: listing `(WETH, 3000, 60)` does **not** unlock `(cbBTC, 3000, 60)`; a V4 entry does not unlock the V3 pool with the same fee (and vice versa).
 - **Signers must only list pools that already exist with real liquidity.** A listed-but-missing pool can still be created and seeded by anyone. The deploy script checks every V3 entry exists (`UNI_V3_FACTORY.getPool`); V4 entries must be checked on a fork / the Uniswap UI.
-- Adding a pool does not require the token to be in `allowedToken` yet (swaps check both), so `AddToken` and `SetAllowedPool` can be proposed in parallel. `RemoveToken` leaves the token's pool entries in place but they are inert.
+- Adding a pool does not require the token to be in `allowedToken` yet (swaps check both), so `AddToken` and `SetAllowedPool` can be proposed in parallel. `RemoveToken` leaves the token's pool entries in place but they are inert (they come back if the token is re-added — re-check them then).
+- **`ChangeStableToken` drops every entry** ([morpho-integration §5](morpho-integration.md#5-changestabletoken)): old entries stay keyed by the old stable, so the `(newStable, token)` pools — which nobody vetted and may not even exist yet (a stolen operator key could create and seed one) — are never swappable until signers list them again with `SetAllowedPool` — and a `SetAllowedPool` proposed before the switch is expired, so it can't land under the new stable either. Switching back to an old stable re-activates the entries it had; re-check them.
 - No per-tx / per-day caps, no TWAP check (by design, spec §7) — sandwich on a listed pool remains an accepted risk ([security-safety §5](security-safety.md#5-accepted-risks)).
 ### Edge cases
 - Default list (`.env.example`, checked on a Base fork 2026-10-08): V3 USDC/WETH 500, V3 USDC/cbBTC 500, V4 USDC/WETH 500/10 and 3000/60, V4 USDC/cbBTC 500/10. Native ETH: add `(address(0), 500, 10)` together with `AddToken(address(0))`.

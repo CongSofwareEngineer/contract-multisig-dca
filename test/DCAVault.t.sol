@@ -1027,7 +1027,7 @@ contract DCAVaultTest is VaultTestBase {
         assertFalse(vault.allowedPool(address(weth), 100, 1), "needs threshold");
         vm.prank(signer2);
         vm.expectEmit(false, false, false, true, address(vault));
-        emit DCAVaultStorage.PoolAllowed(address(weth), 100, 1, true);
+        emit DCAVaultStorage.PoolAllowed(address(usdc), address(weth), 100, 1, true);
         vault.approve(id);
         assertTrue(vault.allowedPool(address(weth), 100, 1));
 
@@ -1041,7 +1041,7 @@ contract DCAVaultTest is VaultTestBase {
         uint256 id = vault.proposeSetAllowedPool(address(weth), FEE_LOW, TS_LOW, false);
         vm.prank(signer2);
         vm.expectEmit(false, false, false, true, address(vault));
-        emit DCAVaultStorage.PoolAllowed(address(weth), FEE_LOW, TS_LOW, false);
+        emit DCAVaultStorage.PoolAllowed(address(usdc), address(weth), FEE_LOW, TS_LOW, false);
         vault.approve(id);
         assertFalse(vault.allowedPool(address(weth), FEE_LOW, TS_LOW));
         _deposit(1e6);

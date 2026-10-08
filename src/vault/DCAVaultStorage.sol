@@ -104,17 +104,24 @@ abstract contract DCAVaultStorage is ReentrancyGuard {
     /// @dev Mirror of `allowedToken` so views can list whitelisted balances without ever
     ///      touching a non-whitelisted (possibly malicious) token.
     address[] internal _allowedTokenList;
-    /// @notice Pools the operator may swap through: `allowedPool[token][fee][tickSpacing]`
-    ///         (`tickSpacing == V3_POOL` = V3 pool, otherwise hookless V4 pool). The token, fee and tick spacing
-    ///         are whitelisted together as one entry, so the operator can never combine them into a pool the
-    ///         signers did not pick — e.g. a fresh, attacker-seeded pool with an unused fee / spacing combo.
-    /// @dev No on-chain list (contract size limit): the full set is rebuilt off-chain from `PoolAllowed` events.
-    mapping(address => mapping(uint24 => mapping(int24 => bool))) public allowedPool;
+    /// @dev Pools the operator may swap through: `_allowedPool[stable][token][fee][tickSpacing]`
+    ///      (`tickSpacing == V3_POOL` = V3 pool, otherwise hookless V4 pool). The token, fee and tick spacing
+    ///      are whitelisted together as one entry, so the operator can never combine them into a pool the
+    ///      signers did not pick — e.g. a fresh, attacker-seeded pool with an unused fee / spacing combo.
+    ///      Keyed by the stable too: after `ChangeStableToken` every old entry stops matching, so (newStable, token)
+    ///      pools nobody vetted — possibly not created yet — never become swappable by accident.
+    ///      No on-chain list (contract size limit): the full set is rebuilt off-chain from `PoolAllowed` events.
+    mapping(address => mapping(address => mapping(uint24 => mapping(int24 => bool)))) internal _allowedPool;
 
     bool public paused;
     /// @dev True only while `swapExactInputV4` is waiting for native ETH output; `receive()` rejects ETH
     ///      at every other moment.
     bool internal _expectingNative;
+    /// @notice Timestamp of the last `ChangeStableToken`. Every proposal created at or before it is expired:
+    ///         its payload was vetted against the old stable (e.g. a `SetAllowedPool` meant for USDC/WETH would
+    ///         otherwise open the unvetted newStable/WETH pool; a `ChangeMorphoVault` would point at an old-stable
+    ///         vault).
+    uint64 public stableChangedAt;
 
     /// @dev Raw storage; `getProposal(id)` adds live vote count, threshold and expiry.
     mapping(uint256 => Proposal) public proposals;
@@ -157,7 +164,7 @@ abstract contract DCAVaultStorage is ReentrancyGuard {
         address oldStable, address newStable, address oldMorphoVault, address newMorphoVault, uint256 sweptAmount
     );
     event TokenAllowed(address token, bool allowed);
-    event PoolAllowed(address token, uint24 fee, int24 tickSpacing, bool allowed);
+    event PoolAllowed(address stable, address token, uint24 fee, int24 tickSpacing, bool allowed);
     event Paused(address indexed by);
     event Unpaused();
 

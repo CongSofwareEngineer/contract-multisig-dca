@@ -37,6 +37,7 @@ Invariant #7: expired / executed / cancelled (by proposer or by ≥ 50% rejectio
 - Proposals (incl. `WithdrawBatch`) work while paused.
 - Several proposals can be pending at the same time; creating one never affects the others.
 - A proposal is executable up to and including `createdAt + 7 days`; one second later it is expired.
+- **Stable change expires everything pending**: `ChangeStableToken` sets `stableChangedAt = block.timestamp`; every proposal with `createdAt <= stableChangedAt` is expired (`ProposalExpired` on approve / reject, `expired = true` in `getProposal`). Its payload was vetted against the old stable — e.g. a pending `SetAllowedPool(WETH, 500, 10)` meant for USDC/WETH would otherwise whitelist the unvetted newStable/WETH pool, and a pending `ChangeMorphoVault` would point the new stable at a USDC vault. Proposals created in the same block as the switch are expired too; re-propose in a later block. `cancel` still works on them (housekeeping). See [morpho-integration §5](morpho-integration.md#5-changestabletoken).
 
 ## 2. Vote counting, expiry & rejection
 - `_countValidApprovals(id)` / `_countValidRejections(id)` loop `signers[]` and count `hasApproved` / `hasRejected`. Only **current** signers count (invariant #6). Removed signers also cannot vote (they fail `onlySigner`).

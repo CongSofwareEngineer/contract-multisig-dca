@@ -424,7 +424,10 @@ abstract contract DCAVaultProposals is DCAVaultMorpho {
         if (_isExpired(p)) revert ProposalExpired();
     }
 
+    /// @dev Expired = past the 7-day window, or created at / before the last `ChangeStableToken` (its payload was
+    ///      vetted against the old stable). `<=` also drops proposals created later in the same block — re-propose.
     function _isExpired(Proposal storage p) internal view returns (bool) {
-        return block.timestamp > uint256(p.createdAt) + PROPOSAL_TTL;
+        uint256 createdAt = p.createdAt;
+        return block.timestamp > createdAt + PROPOSAL_TTL || createdAt <= stableChangedAt;
     }
 }

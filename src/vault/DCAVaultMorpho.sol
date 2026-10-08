@@ -153,6 +153,7 @@ abstract contract DCAVaultMorpho is DCAVaultRoles {
 
         stableToken = newStable;
         morphoVault = newVault;
+        stableChangedAt = uint64(block.timestamp); // expires every pending proposal (see `_isExpired`)
         emit StableTokenChanged(oldStable, newStable, oldVault, newVault, swept);
     }
 

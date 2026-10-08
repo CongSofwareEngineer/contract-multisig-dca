@@ -170,6 +170,7 @@ Thay thế cho mô hình EOA hiện tại (approve unlimited cho Uniswap V3 Rout
 - Khi số approve ≥ threshold → **tự động execute**.
 - `cancel(uint256 id)` → `onlySigner`, chỉ người tạo **và người tạo vẫn đang là signer**, khi chưa execute (chốt 2026-10-08: mọi hàm thay đổi state phải check role — signer đã bị xóa không còn quyền gì).
 - Proposal hết hạn sau **7 ngày**.
+- **`ChangeStableToken` làm mọi proposal cũ hết hạn** (chốt 2026-10-08): set `stableChangedAt = block.timestamp`; proposal có `createdAt <= stableChangedAt` coi như expired (`ProposalExpired`). Lý do: payload đã được kiểm tra theo stable cũ (vd `SetAllowedPool` cũ sẽ mở pool `(stableMới, token)` chưa ai kiểm tra; `ChangeMorphoVault` cũ trỏ stable mới vào vault USDC). Proposal tạo cùng block với lần đổi cũng hết hạn → tạo lại ở block sau.
 - `reject(uint256 id)` → signer vote **không đồng ý** (chốt 2026-10-08). Khi số reject hợp lệ ≥ threshold (≥ 50% signers hiện tại, cùng công thức `getThreshold()`) → proposal bị **hủy** (`cancelled = true`, emit `ProposalCancelled`), không bao giờ dùng lại được. Reject cũng đếm lại theo signer hiện tại.
 - Proposal của người khác **chỉ bị hủy khi ≥ 50% signers reject** → 1 signer không thể spam hủy. Tạo proposal mới **không ảnh hưởng** proposal đang chờ (nhiều proposal chờ song song, mỗi cái tối đa 7 ngày).
 - Mỗi signer chỉ vote 1 lần / proposal: **hoặc approve hoặc reject** (`AlreadyVoted`). Người tạo đã tự approve nên không reject được — muốn rút proposal của mình thì dùng `cancel`.
@@ -206,7 +207,7 @@ Thay thế cho mô hình EOA hiện tại (approve unlimited cho Uniswap V3 Rout
 | `ChangeUniV3Router` | `address` | `!= 0`, `!= router hiện tại`. Không validate on-chain — signers tự kiểm tra trước khi approve (router nhận `tokenIn` khi swap). Không cần migrate allowance vì contract không có standing approval. (chốt 2026-10-08) |
 | `ChangePermit2` | `address` | `!= 0`, `!= hiện tại`. (chốt 2026-10-08) |
 | `ChangeUniversalRouter` | `address` | `!= 0`, `!= hiện tại`. (chốt 2026-10-08) |
-| `ChangeStableToken` | `(address newStable, address newVault, address to)` | `newStable`, `newVault != 0`; `newStable != stableToken`; `newVault != morphoVault`; `newStable` không nằm trong `allowedToken`; `to` trong `isWithdrawAddress`. **Rút sạch rồi mới đổi**: `redeem` toàn bộ shares ở vault cũ → chuyển **toàn bộ** stable cũ (idle + vừa redeem) về `to` → set `stableToken = newStable`, `morphoVault = newVault`. `newVault` phải là Morpho vault của `newStable` — không validate on-chain. (chốt 2026-10-08) |
+| `ChangeStableToken` | `(address newStable, address newVault, address to)` | `newStable`, `newVault != 0`; `newStable != stableToken`; `newVault != morphoVault`; `newStable` không nằm trong `allowedToken`; `to` trong `isWithdrawAddress`. **Rút sạch rồi mới đổi**: `redeem` toàn bộ shares ở vault cũ → chuyển **toàn bộ** stable cũ (idle + vừa redeem) về `to` → set `stableToken = newStable`, `morphoVault = newVault`. Whitelist pool của stable cũ **không** chuyển sang stable mới (khoá theo stable, §7) — phải `SetAllowedPool` lại. Mọi proposal đang chờ bị expire (§5). `newVault` phải là Morpho vault của `newStable` — không validate on-chain. (chốt 2026-10-08) |
 
 > Enum (16 loại): `SetAllowedPool` = 10, `Unpause` = 11, sau đó 3 loại đổi địa chỉ protocol và `ChangeStableToken` = 15. (2026-10-08: `SetAllowedPool` thay `SetAllowedFee` + `SetAllowedTickSpacing`; chưa deploy nên đổi enum được.)
 > Sweep nằm **trong** `ChangeStableToken` (không phải điều kiện "balance = 0" trước khi đổi) để không ai chặn được việc đổi bằng cách gửi 1 wei stable cũ / gọi `depositAndSupply`. Sau khi đổi, stable cũ chỉ là token chưa whitelist (bị bỏ qua như token rác).
@@ -241,7 +242,7 @@ mapping(address => bool) public isWithdrawAddress;
 // Whitelist
 mapping(address => bool) public allowedToken;   // token mua bán: WETH, cbBTC, (address(0) = ETH native). KHÔNG chứa stable
 struct PoolConfig { address token; uint24 fee; int24 tickSpacing; } // tickSpacing 0 = V3, >= 1 = V4 hookless
-mapping(address => mapping(uint24 => mapping(int24 => bool))) public allowedPool; // [token][fee][tickSpacing]
+mapping(address => mapping(address => mapping(uint24 => mapping(int24 => bool)))) internal _allowedPool; // [stable][token][fee][tickSpacing]; view allowedPool(token, fee, tickSpacing) đọc theo stable hiện tại
 // Không có list on-chain (giới hạn size 24,576 B) — dựng lại list từ event PoolAllowed
 
 // Safety
@@ -268,6 +269,7 @@ Constructor nhận: `stableToken, uniV3Router, permit2, universalRouter, morphoV
 - Pool của token này không mở pool cùng fee/tickSpacing của token khác; entry V4 không mở pool V3 cùng fee (và ngược lại). Swap V4 với `tickSpacing = 0` luôn revert.
 - **Chỉ whitelist pool đã tồn tại và có thanh khoản** (pool chưa tồn tại thì ai cũng tạo được). Deploy script check pool V3 tồn tại qua `UNI_V3_FACTORY.getPool`; pool V4 phải check trên fork.
 - Mặc định deploy: V3 USDC/WETH 500, V3 USDC/cbBTC 500, V4 USDC/WETH 500/10 và 3000/60, V4 USDC/cbBTC 500/10. ETH native: thêm `(address(0), 500, 10)` cùng `AddToken(address(0))`.
+- **Whitelist lưu theo stable** (`_allowedPool[stable][token][fee][tickSpacing]`, chốt 2026-10-08): entry chỉ có nghĩa là pool với stable lúc thêm. Sau `ChangeStableToken`, mọi entry cũ không còn khớp → pool `(stableMới, token)` (chưa ai kiểm tra, có thể chưa tồn tại → key operator bị lộ tự tạo pool giá lệch) không swap được cho tới khi signers `SetAllowedPool` lại. Event `PoolAllowed(stable, token, fee, tickSpacing, allowed)`.
 - Bot tự chọn pool trong danh sách này.
 - Signers thêm/bớt pool qua proposal `SetAllowedPool`.
 - Slippage do bot off-chain kiểm soát qua `amountOutMinimum` (contract chỉ check `> 0`).
@@ -319,7 +321,7 @@ Unpaused()
 4. Token chỉ ra ngoài qua `WithdrawBatch` (hoặc sweep của `ChangeStableToken`) đã đủ vote, và chỉ về `isWithdrawAddress`. (Ngoại lệ: `ChangeMorphoVault` gửi stable vào vault mới, và swap gửi `tokenIn` vào router — các địa chỉ này chỉ đổi được qua proposal đủ threshold; signers chịu trách nhiệm kiểm tra trước khi approve.)
 5. Số signer **không bao giờ < 2**.
 6. Vote của signer đã bị xóa không được tính.
-7. Proposal hết hạn / đã execute / đã cancel không thể execute.
+7. Proposal hết hạn (quá 7 ngày, hoặc tạo trước lần `ChangeStableToken` gần nhất) / đã execute / đã cancel không thể execute.
 8. Khi `paused`, mọi hàm operator revert. 1 signer pause được ngay; unpause chỉ qua proposal.
 9. Không có hàm `delegatecall`, `selfdestruct`, hay gọi địa chỉ tùy ý với calldata tùy ý.
 10. Contract **từ chối ETH**, trừ đúng lúc swap V4 mua ETH native (`receive()` chỉ mở khi `_expectingNative`); không có `fallback`. Router đẩy ETH vào lúc swap khác → revert.

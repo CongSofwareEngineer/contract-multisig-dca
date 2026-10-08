@@ -68,11 +68,14 @@ Proposal `ChangeStableToken(address newStable, address newVault, address to)` / 
 1. Checks (at propose and again at execute): `newStable`, `newVault != 0` (`ZeroAddress`); `newStable != stableToken` (`SameAddress`); `newVault != morphoVault` (`SameMorphoVault`); `newStable` not in `allowedToken` (`StableNotTradable`); `to` in `isWithdrawAddress` (`WithdrawAddressNotAllowed`).
 2. `redeem(all shares)` of the old Morpho vault → emit `MorphoWithdrawn`.
 3. Send **the whole old-stable balance** (redeemed + idle) to `to` → emit `Withdrawn`.
-4. Set `stableToken = newStable`, `morphoVault = newVault` → emit `StableTokenChanged(..., swept)`.
+4. Set `stableToken = newStable`, `morphoVault = newVault`, `stableChangedAt = block.timestamp` → emit `StableTokenChanged(..., swept)`. Every other pending proposal is now expired ([proposal-system §1 Edge cases](proposal-system.md#edge-cases)).
+5. Implicit: the pool whitelist is keyed by the stable, so **no pool is allowed for the new stable** until signers add entries with `SetAllowedPool` ([swap-v3 §3](swap-v3.md#3-pool-whitelist-allowedpool--shared-with-v4)). Swaps revert `PoolNotAllowed` until then.
 ### Security
 - The sweep happens **inside** the proposal rather than as a "balance must be 0" precondition. Otherwise anyone could block the change forever by donating 1 wei of old stable or calling `depositAndSupply`. Dust that arrives between propose and execute is simply swept too (`test_Proposal_ChangeStableTokenCannotBeGriefedByDust`).
 - Old stable only ever goes to a whitelisted withdraw address (invariant #4).
 - `newVault` is not validated on-chain. Signers must check `asset() == newStable` before approving.
+- Old pool entries never carry over: an entry vetted for (USDC, WETH, 500, 10) does not open the (newStable, WETH, 500, 10) pool, which may not exist and could be created at a rigged price by a stolen operator key (`test_Security_ChangeStableTokenDropsOldPoolEntries`). Create the `SetAllowedPool` proposals for the new stable **after** the switch (in a later block — earlier ones are expired), listing only pools that exist with real liquidity.
+- Pending proposals vetted against the old stable can never execute after the switch (`test_Security_ChangeStableTokenExpiresPendingProposals`); re-propose whatever is still needed.
 ### Edge cases
 - After the switch the old stable is just an unlisted token: it can't be swapped or withdrawn (`TokenNotAllowed`) and is ignored like junk. If old stable arrives later, whitelist it with `AddToken` to withdraw it.
 - To make a tradable token the new stable, first `RemoveToken` it.

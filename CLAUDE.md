@@ -102,7 +102,8 @@ These are the §10 invariants of the spec. Every one needs a test in
 5. `signers.length` is **never < `MIN_SIGNERS = 2`**.
 6. Votes from an address that is no longer a signer **do not count** — re-count valid
    votes at execute time.
-7. An expired (> 7 days), executed or cancelled proposal can never execute.
+7. An expired (> 7 days, or created at/before the last `ChangeStableToken`), executed or cancelled proposal
+   can never execute.
 8. While `paused`, every operator function reverts. One signer can pause immediately;
    unpausing requires a threshold `Unpause` proposal.
 9. No `delegatecall`, no `selfdestruct`, no calling an arbitrary address with arbitrary
@@ -148,9 +149,11 @@ Also:
 - **Operator safety limits = the pool whitelist `allowedPool` only.** One entry = one pool
   `(token, fee, tickSpacing)` vs the stable; `tickSpacing = 0` = V3 pool, `>= 1` = hookless
   V4 pool. Never split it back into independent fee / tick-spacing lists (the operator could
-  combine them into an attacker-created pool). No per-tx or per-day caps, no TWAP check.
+  combine them into an attacker-created pool). Entries are keyed by the stable too
+  (`_allowedPool[stable][token][fee][tickSpacing]`), so `ChangeStableToken` drops them all.
+  No per-tx or per-day caps, no TWAP check.
   Slippage is the bot's job via `amountOutMinimum` (contract only checks `> 0`).
-- **Contract size is ~1,029 B under the EIP-170 limit** (24,576 B). Run `forge build --sizes`
+- **Contract size is ~909 B under the EIP-170 limit** (24,576 B). Run `forge build --sizes`
   after any change; deploy fails on mainnet if it goes over.
 - **Pool fee tiers in practice:** USDC/WETH → `500`, WETH/cbBTC → `3000`;
   verify USDC/cbBTC liquidity on a fork before using it.
