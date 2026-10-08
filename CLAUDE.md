@@ -18,7 +18,10 @@ Read it fully before writing any code.
 A single immutable Solidity vault on **Base mainnet** (chainId `8453`) that DCAs into
 **cbBTC** and **WETH** over ~3 years:
 
-- Idle **USDC always sits in a MetaMorpho Vault** (ERC-4626) earning yield.
+- **One stablecoin** (`stableToken`, USDC) is kept separate from the tradable-token list
+  (`allowedToken`: WETH, cbBTC, optionally native ETH = `address(0)` for V4).
+- Idle **stable always sits in a MetaMorpho Vault** (ERC-4626) earning yield; only the stable
+  goes to Morpho.
 - An **off-chain bot** decides when to buy/sell and submits txs with the `operator` key;
   the vault withdraws exactly the USDC needed from Morpho → swaps on Uniswap V3.
 - Bought cbBTC / WETH **stay in the contract**. Nothing is forwarded anywhere.
@@ -53,7 +56,9 @@ QuoterV2, signing with the operator key). It gets its own spec.
 │   │   ├── DCAVaultStorage.sol  # types, constants, immutables, state, events, errors, modifiers
 │   │   ├── DCAVaultRoles.sol    # signers / operators / withdraw addresses / token & fee whitelists
 │   │   ├── DCAVaultMorpho.sol   # depositAndSupply, morphoDeposit/Withdraw, ChangeMorphoVault migration
-│   │   ├── DCAVaultSwap.sol     # swapExactInputV3, withdrawAndSwapV3, V4 stub
+│   │   ├── DCAVaultSwap.sol     # shared swap checks + settlement (base of V3 / V4)
+│   │   ├── DCAVaultSwapV3.sol   # swapExactInputV3, withdrawAndSwapV3
+│   │   ├── DCAVaultSwapV4.sol   # swapExactInputV4 (UniversalRouter + Permit2)
 │   │   └── DCAVaultProposals.sol # pause, propose/approve/cancel, execute, WithdrawBatch
 │   └── interfaces/
 │       ├── ISwapRouter02.sol
@@ -102,10 +107,12 @@ These are the §10 invariants of the spec. Every one needs a test in
    unpausing requires a threshold `Unpause` proposal.
 9. No `delegatecall`, no `selfdestruct`, no calling an arbitrary address with arbitrary
    calldata.
-10. The contract **rejects ETH** — no `receive()`, no payable `fallback()`.
-11. Only USDC can be deposited, via `depositAndSupply` (no generic
-    `deposit(address token, ...)`). Swap / withdraw revert for any token outside
-    `allowedToken`.
+10. The contract **rejects ETH** — no payable `fallback()`; `receive()` only accepts ETH while
+    `swapExactInputV4` is buying native ETH (`_expectingNative` flag), and reverts otherwise.
+11. Only the stable can be deposited, via `depositAndSupply` (no generic
+    `deposit(address token, ...)`). Swap / withdraw revert for any token that is not
+    `stableToken` and not in `allowedToken`. "Is it the stable?" is always an address compare
+    against `stableToken` — the stable is never in `allowedToken`.
 12. Junk tokens transferred directly in **must not** make any function revert or change
     behavior: never loop over "all tokens held", never read the balance of a non-
     whitelisted token, never call into a non-whitelisted token address. There is **no
@@ -298,7 +305,8 @@ inside* that file. Expected set (~6 files):
 - Do NOT add a proposal type that approves arbitrary tokens or spenders.
 - Do NOT leave any standing approval — approve exact → use → reset to 0, same tx.
 - Do NOT take `recipient` / `receiver` / `owner` from a parameter; hardcode `address(this)`.
-- Do NOT add `receive()` / payable `fallback()`, or a rescue function for junk tokens.
+- Do NOT add payable `fallback()`, widen `receive()` beyond the V4 native-ETH-buy window, or add a
+  rescue function for junk tokens.
 - Do NOT make the contract upgradeable or add a proxy.
 - Do NOT use `delegatecall` or `selfdestruct`.
 - Do NOT hardcode protocol addresses in the contract — constructor only.

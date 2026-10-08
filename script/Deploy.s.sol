@@ -12,7 +12,7 @@ contract Deploy is Script {
     function run() external returns (DCAVault vault) {
         require(block.chainid == 8453, "Deploy: not Base mainnet");
 
-        address usdc = vm.envAddress("USDC");
+        address stableToken = vm.envAddress("STABLE_TOKEN");
         address router = vm.envAddress("UNI_V3_ROUTER");
         address permit2 = vm.envAddress("PERMIT2");
         address universalRouter = vm.envAddress("UNIVERSAL_ROUTER");
@@ -22,10 +22,8 @@ contract Deploy is Script {
         address[] memory operators = _envAddressesOrEmpty("OPERATORS");
         address[] memory withdrawAddresses = _envAddressesOrEmpty("WITHDRAW_ADDRESSES");
 
-        address[] memory tokens = new address[](3);
-        tokens[0] = usdc;
-        tokens[1] = vm.envAddress("WETH");
-        tokens[2] = vm.envAddress("CBBTC");
+        // Tradable tokens only (the stable is passed separately). address(0) = native ETH (V4 only).
+        address[] memory tokens = vm.envAddress("TOKENS", ",");
 
         uint256[] memory rawFees = vm.envUint("FEES", ",");
         uint24[] memory fees = new uint24[](rawFees.length);
@@ -34,22 +32,47 @@ contract Deploy is Script {
             fees[i] = uint24(rawFees[i]);
         }
 
-        // Pre-flight: every protocol/token address must have code, and Morpho must be a USDC vault.
-        _requireCode(usdc, "USDC");
-        _requireCode(tokens[1], "WETH");
-        _requireCode(tokens[2], "CBBTC");
+        int256[] memory rawTickSpacings = vm.envInt("TICK_SPACINGS", ",");
+        int24[] memory tickSpacings = new int24[](rawTickSpacings.length);
+        for (uint256 i; i < rawTickSpacings.length; ++i) {
+            require(rawTickSpacings[i] >= 1 && rawTickSpacings[i] <= type(int16).max, "Deploy: bad tick spacing");
+            tickSpacings[i] = int24(rawTickSpacings[i]);
+        }
+
+        // Pre-flight: every protocol/token address must have code, and Morpho must be a vault for the stable.
+        _requireCode(stableToken, "STABLE_TOKEN");
+        for (uint256 i; i < tokens.length; ++i) {
+            require(tokens[i] != stableToken, "Deploy: STABLE_TOKEN must not be in TOKENS");
+            if (tokens[i] != address(0)) _requireCode(tokens[i], "TOKENS");
+        }
         _requireCode(router, "UNI_V3_ROUTER");
         _requireCode(permit2, "PERMIT2");
         _requireCode(universalRouter, "UNIVERSAL_ROUTER");
         _requireCode(morphoVault, "MORPHO_VAULT");
-        require(IERC4626(morphoVault).asset() == usdc, "Deploy: MORPHO_VAULT asset != USDC");
+        require(IERC4626(morphoVault).asset() == stableToken, "Deploy: MORPHO_VAULT asset != STABLE_TOKEN");
         require(withdrawAddresses.length > 0, "Deploy: set WITHDRAW_ADDRESSES");
 
-        _print(usdc, router, permit2, universalRouter, morphoVault, signers, operators, withdrawAddresses, fees);
+        _print(stableToken, router, permit2, universalRouter, morphoVault, signers, operators, withdrawAddresses, fees);
+        for (uint256 i; i < tokens.length; ++i) {
+            console2.log("token    ", tokens[i]);
+        }
+        for (uint256 i; i < tickSpacings.length; ++i) {
+            console2.log("tickSpacing", int256(tickSpacings[i]));
+        }
 
         vm.startBroadcast(vm.envUint("PRIVATE_KEY_DEPLOYER"));
         vault = new DCAVault(
-            usdc, router, permit2, universalRouter, morphoVault, signers, operators, withdrawAddresses, tokens, fees
+            stableToken,
+            router,
+            permit2,
+            universalRouter,
+            morphoVault,
+            signers,
+            operators,
+            withdrawAddresses,
+            tokens,
+            fees,
+            tickSpacings
         );
         vm.stopBroadcast();
 
@@ -68,7 +91,7 @@ contract Deploy is Script {
     }
 
     function _print(
-        address usdc,
+        address stableToken,
         address router,
         address permit2,
         address universalRouter,
@@ -78,7 +101,7 @@ contract Deploy is Script {
         address[] memory withdrawAddresses,
         uint24[] memory fees
     ) internal pure {
-        console2.log("USDC            ", usdc);
+        console2.log("STABLE_TOKEN    ", stableToken);
         console2.log("UNI_V3_ROUTER   ", router);
         console2.log("PERMIT2         ", permit2);
         console2.log("UNIVERSAL_ROUTER", universalRouter);

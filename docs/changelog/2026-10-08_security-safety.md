@@ -1,13 +1,19 @@
 # Security & Safety
 - **Date**: 2026-10-08
 - **Feature**: security-safety (→ docs/instruction/security-safety.md)
-- **Type**: Added
-- **Files**: `src/vault/DCAVaultStorage.sol`, `src/vault/DCAVaultRoles.sol`, `src/vault/DCAVaultProposals.sol`, `test/DCAVault.security.t.sol`, `test/mocks/JunkToken.sol`, `test/mocks/ReentrantMorphoVault.sol`
+- **Type**: Added, Changed
+- **Files**: `src/vault/DCAVaultStorage.sol`, `src/vault/DCAVaultRoles.sol`, `src/vault/DCAVaultProposals.sol`, `src/vault/DCAVaultSwap.sol`, `test/DCAVault.security.t.sol`, `test/helpers/VaultTestBase.sol`, `test/mocks/JunkToken.sol`, `test/mocks/ReentrantMorphoVault.sol`
 - **What**:
   - **Pause**: single-signer `pause()`, `Unpause` proposal.
   - **Token whitelist**: Add/RemoveToken (USDC permanent), `getAllowedTokens()`, `getBalances()` over whitelist only.
   - **WithdrawBatch**: whitelisted to/tokens, `max` support, USDC shortfall pulled from Morpho.
-  - **Hardening**: no receive/fallback, no delegatecall/selfdestruct, nonReentrant on all external-touching functions.
-- **Tests**: one test group per §10 invariant (1–12) incl. fuzzed malicious operator, bytecode opcode scan, junk token, reentrancy. 125 passed, 0 failed (88 unit, 27 security, 10 fork on Base mainnet). Without BASE_RPC_URL the fork suite is skipped.
+  - **Outflows**: tokens leave only to `isWithdrawAddress` or, on `ChangeMorphoVault`, to the vault a threshold of signers approved (not validated on-chain; covered by `test_Security_ChangeMorphoVaultNeedsThreshold`).
+  - **Swap scope**: operator limited to USDC ↔ whitelisted-token pools; V4 additionally limited to hookless pools (`hooks = address(0)`) with a whitelisted fee and tick spacing.
+  - **V4 approvals**: ERC20 → Permit2 and Permit2 → UniversalRouter allowances are exact, Permit2 expires this block, both reset to 0 in the same call (invariant 3); `_assertNoAllowances` now checks both.
+  - **Hardening**: no receive/fallback, no delegatecall/selfdestruct, nonReentrant on all external-touching functions. `cancel` now `onlySigner`, so every state-changing signer function checks the role (a removed signer keeps no power).
+  - **Protocol address changes**: `uniV3Router` / `permit2` / `universalRouter` changeable only at threshold; the old router keeps no allowance after a switch.
+  - **Accepted risks** (owner decision, documented in spec §16 and instruction §5): operator sandwich (`minOut > 0` only), all-or-nothing Morpho migration, 2 signers ⇒ threshold 1, stale `Unpause` proposals, protocol addresses not validated on-chain.
+- **Tests**: one test group per §10 invariant (1–12) incl. fuzzed malicious operator, bytecode opcode scan, junk token, reentrancy, fake-vault migration, USDC-side swap fuzz; `test_Security_ChangeProtocolAddressesNeedThreshold`, `test_Security_OldRouterHasNoPowerAfterChange`; `test_Invariant1_OperatorCannotUseSignerFunctions` now also covers `reject` / `cancel` / `pause`; V4: fuzz action, `test_Invariant1_V4RouterCannotPullMoreThanAmountIn`, `test_Invariant1_V4ShortOutputIsCaughtByBalanceDelta`, `test_Invariant3_V4Permit2AllowanceExpiresThisBlock`, V4 steps in invariants #2 / #3 / #8. `forge test` (incl. Base mainnet fork): 174 passed, 0 failed (125 unit, 35 security, 14 fork).
 - **Why**:
   - Initial implementation of DCA_VAULT_SPEC.md §5.1b, §5.3 (pause, WithdrawBatch), §10.
+  - Follow-up to the 2026-10-08 security review (owner decisions): add role checks everywhere, make Uniswap / Permit2 addresses changeable, keep sandwich + migration behavior as spec and document them as accepted risks.

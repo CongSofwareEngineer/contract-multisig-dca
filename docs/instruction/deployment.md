@@ -11,13 +11,14 @@ Sub-logics:
 5. Source layout
 
 ## 1. Constructor
-`DCAVault(usdc, uniV3Router, permit2, universalRouter, morphoVault, signers[], operators[], withdrawAddresses[], tokens[], fees[])`
-Validates: all protocol addresses non-zero; `IERC4626(morphoVault).asset() == usdc`; signers ≥ 2, non-zero, unique; operators non-zero, unique, not signers; withdraw addresses non-zero, unique; tokens non-zero, unique and include `usdc`; fees > 0, unique.
+`DCAVault(usdc, uniV3Router, permit2, universalRouter, morphoVault, signers[], operators[], withdrawAddresses[], tokens[], fees[], tickSpacings[])`
+Validates: all protocol addresses non-zero (`morphoVault` is **not** checked further on-chain — the deploy script pre-flights `asset() == usdc`); signers ≥ 2, non-zero, unique; operators non-zero, unique, not signers; withdraw addresses non-zero, unique; tokens non-zero, unique and include `usdc`; fees > 0, unique; tick spacings in `1..32767`, unique (used by V4 swaps).
 No protocol address is hardcoded in the contract.
 
 ## 2. Deploy script
 `script/Deploy.s.sol` reads everything from env (template: `.env.example`):
-`USDC, WETH, CBBTC, UNI_V3_ROUTER, PERMIT2, UNIVERSAL_ROUTER, MORPHO_VAULT, SIGNERS, OPERATORS, WITHDRAW_ADDRESSES, FEES, PRIVATE_KEY_DEPLOYER`.
+`USDC, WETH, CBBTC, UNI_V3_ROUTER, PERMIT2, UNIVERSAL_ROUTER, MORPHO_VAULT, SIGNERS, OPERATORS, WITHDRAW_ADDRESSES, FEES, TICK_SPACINGS, PRIVATE_KEY_DEPLOYER`.
+`TICK_SPACINGS` is required (default `10,60`, matching fee `500` → 10 and `3000` → 60 on the Base V4 pools).
 Lists are comma-separated without spaces. `OPERATORS` may be empty; `WITHDRAW_ADDRESSES` must not be.
 Pre-flight: requires chainId 8453, code at every address, Morpho asset == USDC; prints the full config.
 ```bash
@@ -37,8 +38,8 @@ forge script script/Deploy.s.sol --rpc-url $BASE_RPC_URL --broadcast --verify
 | QuoterV2 | `0x3d4e44Eb1374240CE5F1B871ab261CD16335B76a` | quotes work on fork |
 | V3 Factory | `0x33128a8fC17869897dcE68Ed026d694621f6FDfD` | pools found |
 | Permit2 | `0x000000000022D473030F116dDEE9F6B43aC78BA3` | code ✓ |
-| UniversalRouter | `0x6ff5693b99212da76ad316178a184ab56d299b43` | code ✓ — re-check on docs.uniswap.org before Phase 2 |
-| Steakhouse High Yield USDC (bbqUSDC) | `0xbeeff7aE5E00Aae3Db302e4B0d8C883810a58100` | `asset()` = USDC, TVL ≈ 25M |
+| UniversalRouter | `0x6ff5693b99212da76ad316178a184ab56d299b43` | code ✓; V4 swaps through it verified on a Base fork 2026-10-08 (fork tests) |
+| Steakhouse High Yield USDC (bbqUSDC) | `0xbeeff7aE5E00Aae3Db302e4B0d8C883810a58100` | `asset()` = USDC, TVL ≈ 25M; Morpho **Vault V2** |
 
 The checks above were done via RPC; still cross-check on basescan.org before mainnet broadcast.
 
@@ -53,14 +54,16 @@ Spec §13: verify on basescan → check `getSigners()`, operators, withdraw addr
 ### Files
 | File | Contents |
 |---|---|
-| `src/DCAVault.sol` | Final contract: constructor seeds signers / operators / withdraw addresses / tokens / fees. |
-| `src/vault/DCAVaultStorage.sol` | Types, constants, immutables, **all** state, events, errors, modifiers; base constructor sets protocol addresses + checks `asset() == usdc`. |
+| `src/DCAVault.sol` | Final contract: constructor seeds signers / operators / withdraw addresses / tokens / fees / tick spacings. |
+| `src/vault/DCAVaultStorage.sol` | Types, constants, immutable `usdc`, **all** state (incl. `morphoVault`, `uniV3Router`, `permit2`, `universalRouter`, changeable only by proposal), events, errors, modifiers; base constructor sets protocol addresses (non-zero check only). |
 | `src/vault/DCAVaultRoles.sol` | Role / whitelist setters, `getSigners`, `getAllowedTokens`, `getThreshold`. |
 | `src/vault/DCAVaultMorpho.sol` | Morpho deposit / withdraw / migration, `totalUsdc`, `getBalances`. |
-| `src/vault/DCAVaultSwap.sol` | V3 swaps + V4 stub. |
+| `src/vault/DCAVaultSwap.sol` | Base of the swap modules: `_checkSwap` (shared rules) + `_settleSwap` (balance-delta output, `Swapped`, sell → Morpho). |
+| `src/vault/DCAVaultSwapV3.sol` | V3 swaps via SwapRouter02: `swapExactInputV3`, `withdrawAndSwapV3`. |
+| `src/vault/DCAVaultSwapV4.sol` | V4 swap via UniversalRouter + Permit2: `swapExactInputV4`. |
 | `src/vault/DCAVaultProposals.sol` | `pause`, proposal lifecycle, execution dispatch, `WithdrawBatch`. |
 
-Inheritance: `Storage ← Roles ← Morpho ← {Swap, Proposals} ← DCAVault`.
+Inheritance: `Storage ← Roles ← Morpho ← {Swap ← {SwapV3, SwapV4}, Proposals} ← DCAVault`.
 ### Edge cases
 - All state is declared only in `DCAVaultStorage`, so the storage layout is fixed in one place (identical to the pre-split single file).
 - Custom errors, events and `ProposalType` are declared in `DCAVaultStorage`; off-chain code / tests reference them as `DCAVaultStorage.X` (Solidity does not expose inherited errors as `DCAVault.X`). Selectors and ABI encoding are unchanged; only the ABI `internalType` label reads `DCAVaultStorage.ProposalType`.

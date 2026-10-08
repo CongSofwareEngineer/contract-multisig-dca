@@ -1,18 +1,13 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
-import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
-import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
-import {IERC4626} from "@openzeppelin/contracts/interfaces/IERC4626.sol";
 import {DCAVaultMorpho} from "./DCAVaultMorpho.sol";
 
 /// @title DCAVaultProposals
 /// @notice Multisig governance: `pause()`, propose / approve / execute / cancel and every proposal handler
-///         that is not a plain role setter (WithdrawBatch, Unpause, dispatch).
+///         that is not a plain role setter (WithdrawBatch, Unpause, protocol address changes, dispatch).
 /// @dev Votes are re-counted against the live signer set at execute time (invariant 6).
 abstract contract DCAVaultProposals is DCAVaultMorpho {
-    using SafeERC20 for IERC20;
-
     // ------------------------------------------------------------------
     // Signer: pause + proposals
     // ------------------------------------------------------------------
@@ -26,6 +21,7 @@ abstract contract DCAVaultProposals is DCAVaultMorpho {
     }
 
     /// @notice Creates a proposal; the proposer auto-approves, so it may execute immediately.
+    ///         Never affects other pending proposals.
     /// @param pType proposal type
     /// @param data abi-encoded payload for `pType` (see DCA_VAULT_SPEC.md section 5.3)
     /// @return id the new proposal id
@@ -39,9 +35,30 @@ abstract contract DCAVaultProposals is DCAVaultMorpho {
         _approve(id);
     }
 
-    /// @notice Cancels a pending proposal. Only its proposer can cancel.
+    /// @notice Votes against a pending proposal; cancels it once valid rejections reach the threshold
+    ///         (>= 50% of current signers). Each signer votes once per proposal: approve OR reject.
+    /// @dev A single signer can never cancel someone else's proposal on their own (except the 2-signer
+    ///      case, where the threshold is 1 for approving and rejecting alike).
     /// @param id proposal id
-    function cancel(uint256 id) external {
+    function reject(uint256 id) external onlySigner {
+        Proposal storage p = proposals[id];
+        _requirePending(p);
+        if (hasApproved[id][msg.sender] || hasRejected[id][msg.sender]) revert AlreadyVoted();
+
+        hasRejected[id][msg.sender] = true;
+        emit ProposalRejected(id, msg.sender);
+
+        // Same live re-count as approvals: rejections from removed signers do not count.
+        if (_countValidRejections(id) >= getThreshold()) {
+            p.cancelled = true;
+            emit ProposalCancelled(id);
+        }
+    }
+
+    /// @notice Cancels a pending proposal. Only its proposer, while still a signer, can cancel.
+    /// @dev `onlySigner`: a removed signer must not keep any power over proposals, cancel included.
+    /// @param id proposal id
+    function cancel(uint256 id) external onlySigner {
         Proposal storage p = proposals[id];
         if (p.createdAt == 0) revert ProposalNotFound();
         if (msg.sender != p.proposer) revert NotProposer();
@@ -51,9 +68,9 @@ abstract contract DCAVaultProposals is DCAVaultMorpho {
         emit ProposalCancelled(id);
     }
 
-    /// @notice Proposes withdrawing whitelisted tokens to a whitelisted address.
-    /// @param tokens whitelisted tokens
-    /// @param amounts amounts per token; `type(uint256).max` = everything (USDC: incl. all Morpho shares)
+    /// @notice Proposes withdrawing the stable and / or whitelisted tokens to a whitelisted address.
+    /// @param tokens `stableToken` or whitelisted tradable tokens (address(0) = native ETH, if whitelisted)
+    /// @param amounts amounts per token; `type(uint256).max` = everything (stable: incl. all Morpho shares)
     /// @param to whitelisted withdraw address
     function proposeWithdrawBatch(address[] calldata tokens, uint256[] calldata amounts, address to)
         external
@@ -100,19 +117,20 @@ abstract contract DCAVaultProposals is DCAVaultMorpho {
         return _propose(ProposalType.RemoveOperator, abi.encode(account));
     }
 
-    /// @notice Proposes moving all USDC to a new MetaMorpho vault (redeem all -> deposit all).
-    /// @param newVault ERC-4626 vault whose `asset()` is USDC
+    /// @notice Proposes moving all stable to a new MetaMorpho vault (redeem all -> deposit all).
+    /// @param newVault Morpho vault (ERC-4626) for `stableToken`; not validated on-chain
     function proposeChangeMorphoVault(address newVault) external onlySigner nonReentrant returns (uint256) {
         return _propose(ProposalType.ChangeMorphoVault, abi.encode(newVault));
     }
 
-    /// @notice Proposes whitelisting a token.
-    /// @param token token to whitelist
+    /// @notice Proposes whitelisting a tradable token.
+    /// @param token token to whitelist; address(0) = native ETH (V4 only); must not be `stableToken`
     function proposeAddToken(address token) external onlySigner nonReentrant returns (uint256) {
         return _propose(ProposalType.AddToken, abi.encode(token));
     }
 
-    /// @notice Proposes removing a token from the whitelist (USDC cannot be removed).
+    /// @notice Proposes removing a tradable token from the whitelist.
+    /// @dev Its remaining balance can no longer be swapped or withdrawn until it is whitelisted again.
     /// @param token token to remove
     function proposeRemoveToken(address token) external onlySigner nonReentrant returns (uint256) {
         return _propose(ProposalType.RemoveToken, abi.encode(token));
@@ -123,6 +141,52 @@ abstract contract DCAVaultProposals is DCAVaultMorpho {
     /// @param allowed new status
     function proposeSetAllowedFee(uint24 fee, bool allowed) external onlySigner nonReentrant returns (uint256) {
         return _propose(ProposalType.SetAllowedFee, abi.encode(fee, allowed));
+    }
+
+    /// @notice Proposes allowing / disallowing a Uniswap V4 tick spacing (used by `swapExactInputV4`).
+    /// @param tickSpacing tick spacing, in [MIN_TICK_SPACING, MAX_TICK_SPACING]
+    /// @param allowed new status
+    function proposeSetAllowedTickSpacing(int24 tickSpacing, bool allowed)
+        external
+        onlySigner
+        nonReentrant
+        returns (uint256)
+    {
+        return _propose(ProposalType.SetAllowedTickSpacing, abi.encode(tickSpacing, allowed));
+    }
+
+    /// @notice Proposes replacing the Uniswap V3 SwapRouter02 used by operator swaps.
+    /// @dev Not validated on-chain (same trust model as `ChangeMorphoVault`): signers must check the
+    ///      address before approving, because operator swaps hand `tokenIn` to this router.
+    /// @param newRouter new SwapRouter02 address
+    function proposeChangeUniV3Router(address newRouter) external onlySigner nonReentrant returns (uint256) {
+        return _propose(ProposalType.ChangeUniV3Router, abi.encode(newRouter));
+    }
+
+    /// @notice Proposes replacing the Permit2 address (used by V4 swaps).
+    /// @param newPermit2 new Permit2 address
+    function proposeChangePermit2(address newPermit2) external onlySigner nonReentrant returns (uint256) {
+        return _propose(ProposalType.ChangePermit2, abi.encode(newPermit2));
+    }
+
+    /// @notice Proposes replacing the Uniswap UniversalRouter address (used by V4 swaps).
+    /// @param newRouter new UniversalRouter address
+    function proposeChangeUniversalRouter(address newRouter) external onlySigner nonReentrant returns (uint256) {
+        return _propose(ProposalType.ChangeUniversalRouter, abi.encode(newRouter));
+    }
+
+    /// @notice Proposes replacing the stable. On execution every unit of the old stable (idle + all Morpho
+    ///         shares) is sent to `to` first, then `stableToken` and `morphoVault` switch together.
+    /// @param newStable new stablecoin; must not be a whitelisted tradable token
+    /// @param newVault Morpho vault (ERC-4626) for `newStable`; not validated on-chain
+    /// @param to whitelisted withdraw address that receives the old stable
+    function proposeChangeStableToken(address newStable, address newVault, address to)
+        external
+        onlySigner
+        nonReentrant
+        returns (uint256)
+    {
+        return _propose(ProposalType.ChangeStableToken, abi.encode(newStable, newVault, to));
     }
 
     /// @notice Proposes unpausing operator functions.
@@ -161,6 +225,14 @@ abstract contract DCAVaultProposals is DCAVaultMorpho {
         return (p.pType, p.data, _countValidApprovals(id), getThreshold(), p.executed, p.cancelled, _isExpired(p));
     }
 
+    /// @notice Rejections from addresses that are signers right now.
+    /// @param id proposal id
+    /// @return valid rejection count (cancelled once it reaches `getThreshold()`)
+    function getRejections(uint256 id) external view returns (uint256) {
+        if (proposals[id].createdAt == 0) revert ProposalNotFound();
+        return _countValidRejections(id);
+    }
+
     // ------------------------------------------------------------------
     // Internal: proposals
     // ------------------------------------------------------------------
@@ -180,11 +252,9 @@ abstract contract DCAVaultProposals is DCAVaultMorpho {
 
     function _approve(uint256 id) internal {
         Proposal storage p = proposals[id];
-        if (p.createdAt == 0) revert ProposalNotFound();
-        if (p.executed) revert ProposalAlreadyExecuted();
-        if (p.cancelled) revert ProposalIsCancelled();
-        if (_isExpired(p)) revert ProposalExpired();
+        _requirePending(p);
         if (hasApproved[id][msg.sender]) revert AlreadyApproved();
+        if (hasRejected[id][msg.sender]) revert AlreadyVoted();
 
         hasApproved[id][msg.sender] = true;
         emit ProposalApproved(id, msg.sender);
@@ -206,12 +276,28 @@ abstract contract DCAVaultProposals is DCAVaultMorpho {
             if (tokens.length == 0 || tokens.length != amounts.length) revert BadArrayLength();
             if (!isWithdrawAddress[to]) revert WithdrawAddressNotAllowed();
             for (uint256 i; i < tokens.length; ++i) {
-                if (!allowedToken[tokens[i]]) revert TokenNotAllowed();
+                if (tokens[i] != stableToken && !allowedToken[tokens[i]]) revert TokenNotAllowed();
                 if (amounts[i] == 0) revert ZeroAmount();
             }
+        } else if (pType == ProposalType.ChangeStableToken) {
+            (address newStable, address newVault, address to) = abi.decode(data, (address, address, address));
+            if (newStable == address(0) || newVault == address(0)) revert ZeroAddress();
+            if (newStable == stableToken) revert SameAddress();
+            if (newVault == morphoVault) revert SameMorphoVault();
+            if (allowedToken[newStable]) revert StableNotTradable();
+            if (!isWithdrawAddress[to]) revert WithdrawAddressNotAllowed();
+        } else if (pType == ProposalType.AddToken) {
+            // address(0) is valid here: it means native ETH.
+            address token = abi.decode(data, (address));
+            if (token == stableToken) revert StableNotTradable();
+        } else if (pType == ProposalType.RemoveToken) {
+            abi.decode(data, (address)); // address(0) valid (native ETH); existence checked at execution
         } else if (pType == ProposalType.SetAllowedFee) {
             (uint24 fee,) = abi.decode(data, (uint24, bool));
             if (fee == 0) revert InvalidFee();
+        } else if (pType == ProposalType.SetAllowedTickSpacing) {
+            (int24 tickSpacing,) = abi.decode(data, (int24, bool));
+            if (tickSpacing < MIN_TICK_SPACING || tickSpacing > MAX_TICK_SPACING) revert InvalidTickSpacing();
         } else if (pType == ProposalType.Unpause) {
             if (data.length != 0) revert BadArrayLength();
         } else {
@@ -220,8 +306,10 @@ abstract contract DCAVaultProposals is DCAVaultMorpho {
             if (pType == ProposalType.AddSigner && (isSigner[a] || isOperator[a])) revert RoleConflict();
             if (pType == ProposalType.AddOperator && (isOperator[a] || isSigner[a])) revert RoleConflict();
             if (pType == ProposalType.RemoveSigner && signers.length <= MIN_SIGNERS) revert TooFewSigners();
-            if (pType == ProposalType.RemoveToken && a == usdc) revert CannotRemoveUsdc();
-            if (pType == ProposalType.ChangeMorphoVault && IERC4626(a).asset() != usdc) revert VaultAssetMismatch();
+            if (pType == ProposalType.ChangeMorphoVault && a == morphoVault) revert SameMorphoVault();
+            if (pType == ProposalType.ChangeUniV3Router && a == uniV3Router) revert SameAddress();
+            if (pType == ProposalType.ChangePermit2 && a == permit2) revert SameAddress();
+            if (pType == ProposalType.ChangeUniversalRouter && a == universalRouter) revert SameAddress();
         }
     }
 
@@ -230,9 +318,15 @@ abstract contract DCAVaultProposals is DCAVaultMorpho {
             (address[] memory tokens, uint256[] memory amounts, address to) =
                 abi.decode(data, (address[], uint256[], address));
             _withdrawBatch(tokens, amounts, to);
+        } else if (pType == ProposalType.ChangeStableToken) {
+            (address newStable, address newVault, address to) = abi.decode(data, (address, address, address));
+            _changeStableToken(newStable, newVault, to);
         } else if (pType == ProposalType.SetAllowedFee) {
             (uint24 fee, bool allowed) = abi.decode(data, (uint24, bool));
             _setAllowedFee(fee, allowed);
+        } else if (pType == ProposalType.SetAllowedTickSpacing) {
+            (int24 tickSpacing, bool allowed) = abi.decode(data, (int24, bool));
+            _setAllowedTickSpacing(tickSpacing, allowed);
         } else if (pType == ProposalType.Unpause) {
             if (!paused) revert NotPaused();
             paused = false;
@@ -247,7 +341,10 @@ abstract contract DCAVaultProposals is DCAVaultMorpho {
             else if (pType == ProposalType.RemoveOperator) _removeOperator(a);
             else if (pType == ProposalType.ChangeMorphoVault) _changeMorphoVault(a);
             else if (pType == ProposalType.AddToken) _addToken(a);
-            else _removeToken(a); // RemoveToken — the only remaining type
+            else if (pType == ProposalType.RemoveToken) _removeToken(a);
+            else if (pType == ProposalType.ChangeUniV3Router) _changeUniV3Router(a);
+            else if (pType == ProposalType.ChangePermit2) _changePermit2(a);
+            else _changeUniversalRouter(a); // ChangeUniversalRouter — the only remaining type
         }
     }
 
@@ -262,21 +359,48 @@ abstract contract DCAVaultProposals is DCAVaultMorpho {
 
         for (uint256 i; i < len; ++i) {
             address token = tokens[i];
-            // Never call into a non-whitelisted token (invariant 12).
-            if (!allowedToken[token]) revert TokenNotAllowed();
             uint256 amount = amounts[i];
             if (amount == 0) revert ZeroAmount();
 
-            if (token == usdc) {
-                amount = _prepareUsdc(amount);
+            if (token == stableToken) {
+                amount = _prepareStable(amount);
             } else {
-                uint256 bal = IERC20(token).balanceOf(address(this));
+                // Never call into a non-whitelisted token (invariant 12).
+                if (!allowedToken[token]) revert TokenNotAllowed();
+                uint256 bal = _balanceOf(token);
                 if (amount == type(uint256).max) amount = bal;
                 if (amount == 0 || amount > bal) revert InsufficientBalance();
             }
-            IERC20(token).safeTransfer(to, amount);
+            _sendToken(token, to, amount);
             emit Withdrawn(token, to, amount);
         }
+    }
+
+    // Protocol address changes. No allowance migration needed: approvals are always reset to 0 in the
+    // same tx (invariant 3), so the old address keeps no power over vault funds after the switch.
+
+    function _changeUniV3Router(address newRouter) internal {
+        if (newRouter == address(0)) revert ZeroAddress();
+        address old = uniV3Router;
+        if (newRouter == old) revert SameAddress();
+        uniV3Router = newRouter;
+        emit UniV3RouterChanged(old, newRouter);
+    }
+
+    function _changePermit2(address newPermit2) internal {
+        if (newPermit2 == address(0)) revert ZeroAddress();
+        address old = permit2;
+        if (newPermit2 == old) revert SameAddress();
+        permit2 = newPermit2;
+        emit Permit2Changed(old, newPermit2);
+    }
+
+    function _changeUniversalRouter(address newRouter) internal {
+        if (newRouter == address(0)) revert ZeroAddress();
+        address old = universalRouter;
+        if (newRouter == old) revert SameAddress();
+        universalRouter = newRouter;
+        emit UniversalRouterChanged(old, newRouter);
     }
 
     // ------------------------------------------------------------------
@@ -288,6 +412,20 @@ abstract contract DCAVaultProposals is DCAVaultMorpho {
         for (uint256 i; i < len; ++i) {
             if (hasApproved[id][signers[i]]) ++count;
         }
+    }
+
+    function _countValidRejections(uint256 id) internal view returns (uint256 count) {
+        uint256 len = signers.length;
+        for (uint256 i; i < len; ++i) {
+            if (hasRejected[id][signers[i]]) ++count;
+        }
+    }
+
+    function _requirePending(Proposal storage p) internal view {
+        if (p.createdAt == 0) revert ProposalNotFound();
+        if (p.executed) revert ProposalAlreadyExecuted();
+        if (p.cancelled) revert ProposalIsCancelled();
+        if (_isExpired(p)) revert ProposalExpired();
     }
 
     function _isExpired(Proposal storage p) internal view returns (bool) {

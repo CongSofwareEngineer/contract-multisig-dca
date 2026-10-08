@@ -1,13 +1,15 @@
 # Morpho Integration
 - **Date**: 2026-10-08
 - **Feature**: morpho-integration (→ docs/instruction/morpho-integration.md)
-- **Type**: Added
-- **Files**: `src/vault/DCAVaultMorpho.sol`, `test/DCAVault.t.sol`, `test/DCAVault.fork.t.sol`, `test/mocks/MockMorphoVault.sol`
+- **Type**: Added, Changed
+- **Files**: `src/DCAVault.sol`, `src/vault/DCAVaultStorage.sol`, `src/vault/DCAVaultMorpho.sol`, `src/vault/DCAVaultProposals.sol`, `test/DCAVault.t.sol`, `test/DCAVault.security.t.sol`, `test/DCAVault.fork.t.sol`, `test/helpers/VaultTestBase.sol`, `test/mocks/MockMorphoVault.sol`, `script/Deploy.s.sol`, `.env.example`, `DCA_VAULT_SPEC.md`
 - **What**:
   - **depositAndSupply**: anyone, USDC only, not paused-gated.
   - **morphoDeposit / morphoWithdraw**: operator, receiver/owner hardcoded.
-  - **ChangeMorphoVault**: redeem all → switch → supply whole USDC balance (incl. idle).
+  - **ChangeMorphoVault**: threshold proposal only; redeem all → switch → supply whole USDC balance (incl. idle). Only checks `newVault != 0` and `!= current` (both now already at propose time, re-checked at execute) — no factory / `asset()` validation on-chain (constructor too). No `morphoFactories` arg, no `getMorphoFactories()`, no `NotMorphoVault` / `VaultAssetMismatch` errors.
   - **Views**: `totalUsdc()`.
-- **Tests**: unit with OZ ERC4626 mock; fork against Steakhouse bbqUSDC and migration to Gauntlet USDC Prime. 125 passed, 0 failed (88 unit, 27 security, 10 fork on Base mainnet). Without BASE_RPC_URL the fork suite is skipped.
+  - **Accepted risk** (owner decision): migration stays all-or-nothing — a broken / illiquid old vault blocks `ChangeMorphoVault` (documented in spec §16).
+- **Tests**: unit with OZ ERC4626 mock (migration, same-vault revert); security `test_Security_ChangeMorphoVaultNeedsThreshold` (operator / outsider cannot propose or vote, 1 signer vote does not change the vault, 2nd vote migrates); fork against Steakhouse bbqUSDC (Vault V2), migration to Gauntlet USDC Prime. `forge test` (incl. Base mainnet fork): 148 passed, 0 failed (106 unit, 32 security, 10 fork).
 - **Why**:
   - Initial implementation of DCA_VAULT_SPEC.md §5.1, §5.2, §5.3.
+  - No on-chain vault validation: owner decision — the Morpho address is chosen by the multisig, the contract just supplies / withdraws there. Protection is the threshold vote on `ChangeMorphoVault`; signers verify the vault off-chain before approving.

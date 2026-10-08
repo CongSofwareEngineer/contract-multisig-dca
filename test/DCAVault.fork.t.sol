@@ -5,6 +5,9 @@ import {Test} from "forge-std/Test.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {IERC4626} from "@openzeppelin/contracts/interfaces/IERC4626.sol";
 import {DCAVault} from "../src/DCAVault.sol";
+import {DCAVaultStorage} from "../src/vault/DCAVaultStorage.sol";
+import {IV4Router} from "../src/interfaces/IV4Router.sol";
+import {IPermit2} from "../src/interfaces/IPermit2.sol";
 
 interface IQuoterV2 {
     struct QuoteExactInputSingleParams {
@@ -20,6 +23,19 @@ interface IQuoterV2 {
         returns (uint256 amountOut, uint160 sqrtPriceX96After, uint32 initializedTicksCrossed, uint256 gasEstimate);
 }
 
+interface IV4Quoter {
+    struct QuoteExactSingleParams {
+        IV4Router.PoolKey poolKey;
+        bool zeroForOne;
+        uint128 exactAmount;
+        bytes hookData;
+    }
+
+    function quoteExactInputSingle(QuoteExactSingleParams memory params)
+        external
+        returns (uint256 amountOut, uint256 gasEstimate);
+}
+
 /// @notice Base mainnet fork tests against the real USDC / WETH / cbBTC, SwapRouter02 and MetaMorpho.
 /// @dev Run: `forge test --fork-url $BASE_RPC_URL --match-path test/DCAVault.fork.t.sol -vvv`
 ///      (or just set BASE_RPC_URL). Skipped when no Base RPC is available.
@@ -30,6 +46,7 @@ contract DCAVaultForkTest is Test {
     address constant CBBTC = 0xcbB7C0000aB88B473b1f5aFd9ef808440eed33Bf;
     address constant ROUTER = 0x2626664c2603336E57B271c5C0b26F421741e481;
     address constant QUOTER = 0x3d4e44Eb1374240CE5F1B871ab261CD16335B76a;
+    address constant V4_QUOTER = 0x0d5e0F971ED27FBfF6c2837bf31316121532048D;
     address constant PERMIT2 = 0x000000000022D473030F116dDEE9F6B43aC78BA3;
     address constant UNIVERSAL_ROUTER = 0x6fF5693b99212Da76ad316178A184AB56D299b43;
     address constant STEAKHOUSE_USDC = 0xbeeff7aE5E00Aae3Db302e4B0d8C883810a58100;
@@ -62,16 +79,28 @@ contract DCAVaultForkTest is Test {
         operators[0] = operator;
         address[] memory withdraws = new address[](1);
         withdraws[0] = treasury;
-        address[] memory tokens = new address[](3);
-        tokens[0] = USDC;
-        tokens[1] = WETH;
-        tokens[2] = CBBTC;
+        address[] memory tokens = new address[](2);
+        tokens[0] = WETH;
+        tokens[1] = CBBTC;
         uint24[] memory fees = new uint24[](2);
         fees[0] = 500;
         fees[1] = 3000;
+        int24[] memory tickSpacings = new int24[](2);
+        tickSpacings[0] = 10;
+        tickSpacings[1] = 60;
 
         vault = new DCAVault(
-            USDC, ROUTER, PERMIT2, UNIVERSAL_ROUTER, STEAKHOUSE_USDC, signers, operators, withdraws, tokens, fees
+            USDC,
+            ROUTER,
+            PERMIT2,
+            UNIVERSAL_ROUTER,
+            STEAKHOUSE_USDC,
+            signers,
+            operators,
+            withdraws,
+            tokens,
+            fees,
+            tickSpacings
         );
 
         deal(USDC, user, 10_000e6);
@@ -86,7 +115,7 @@ contract DCAVaultForkTest is Test {
     function test_Fork_DepositAndSupply_GoesToMorpho() public view {
         assertEq(IERC20(USDC).balanceOf(address(vault)), 0);
         assertGt(IERC4626(STEAKHOUSE_USDC).balanceOf(address(vault)), 0);
-        assertApproxEqAbs(vault.totalUsdc(), 10_000e6, 2); // ERC-4626 rounding
+        assertApproxEqAbs(vault.totalStable(), 10_000e6, 2); // ERC-4626 rounding
         _assertNoAllowances(STEAKHOUSE_USDC);
     }
 
@@ -99,7 +128,7 @@ contract DCAVaultForkTest is Test {
         assertGe(out, minOut);
         assertEq(IERC20(WETH).balanceOf(address(vault)), out);
         assertEq(IERC20(USDC).balanceOf(address(vault)), 0);
-        assertApproxEqAbs(vault.totalUsdc(), 9_000e6, 2);
+        assertApproxEqAbs(vault.totalStable(), 9_000e6, 2);
         _assertNoAllowances(STEAKHOUSE_USDC);
     }
 
@@ -112,15 +141,14 @@ contract DCAVaultForkTest is Test {
         _assertNoAllowances(STEAKHOUSE_USDC);
     }
 
-    function test_Fork_SwapExactInputV3_WethToCbbtc3000() public {
+    /// @dev Only the USDC pools run: WETH <-> cbBTC is rejected even though the pool exists.
+    function test_Fork_Revert_SwapExactInputV3_WethToCbbtc() public {
         vm.prank(operator);
         uint256 weth = vault.withdrawAndSwapV3(WETH, 500, 2_000e6, 1, block.timestamp);
         vm.prank(operator);
-        uint256 out = vault.swapExactInputV3(WETH, CBBTC, 3000, weth, 1, block.timestamp);
-        assertGt(out, 0);
-        assertEq(IERC20(WETH).balanceOf(address(vault)), 0);
-        assertEq(IERC20(CBBTC).balanceOf(address(vault)), out);
-        _assertNoAllowances(STEAKHOUSE_USDC);
+        vm.expectRevert(DCAVaultStorage.PairNotAllowed.selector);
+        vault.swapExactInputV3(WETH, CBBTC, 3000, weth, 1, block.timestamp);
+        assertEq(IERC20(WETH).balanceOf(address(vault)), weth);
     }
 
     function test_Fork_Revert_SlippageTooHigh() public {
@@ -128,7 +156,7 @@ contract DCAVaultForkTest is Test {
         vm.prank(operator);
         vm.expectRevert(bytes("Too little received"));
         vault.withdrawAndSwapV3(WETH, 500, 1_000e6, quoted * 2, block.timestamp);
-        assertApproxEqAbs(vault.totalUsdc(), 10_000e6, 2, "USDC stays in Morpho on failure");
+        assertApproxEqAbs(vault.totalStable(), 10_000e6, 2, "USDC stays in Morpho on failure");
     }
 
     // ------------------------------------------------------------------ sell -> Morpho
@@ -155,7 +183,7 @@ contract DCAVaultForkTest is Test {
         vm.prank(operator);
         vault.morphoDeposit(500e6);
         assertEq(IERC20(USDC).balanceOf(address(vault)), 0);
-        assertApproxEqAbs(vault.totalUsdc(), 10_000e6, 3);
+        assertApproxEqAbs(vault.totalStable(), 10_000e6, 3);
         _assertNoAllowances(STEAKHOUSE_USDC);
     }
 
@@ -178,7 +206,7 @@ contract DCAVaultForkTest is Test {
 
         assertEq(IERC20(USDC).balanceOf(treasury), 2_000e6);
         assertEq(IERC20(WETH).balanceOf(treasury), weth);
-        assertApproxEqAbs(vault.totalUsdc(), 7_000e6, 3);
+        assertApproxEqAbs(vault.totalStable(), 7_000e6, 3);
     }
 
     function test_Fork_WithdrawBatch_UsdcMaxRedeemsAll() public {
@@ -193,7 +221,7 @@ contract DCAVaultForkTest is Test {
 
         assertEq(IERC4626(STEAKHOUSE_USDC).balanceOf(address(vault)), 0);
         assertApproxEqAbs(IERC20(USDC).balanceOf(treasury), 10_000e6, 2);
-        assertEq(vault.totalUsdc(), 0);
+        assertEq(vault.totalStable(), 0);
     }
 
     // ------------------------------------------------------------------ change vault
@@ -208,7 +236,7 @@ contract DCAVaultForkTest is Test {
         assertEq(IERC4626(STEAKHOUSE_USDC).balanceOf(address(vault)), 0);
         assertGt(IERC4626(GAUNTLET_USDC_PRIME).balanceOf(address(vault)), 0);
         assertEq(IERC20(USDC).balanceOf(address(vault)), 0);
-        assertApproxEqAbs(vault.totalUsdc(), 10_000e6, 3);
+        assertApproxEqAbs(vault.totalStable(), 10_000e6, 3);
         _assertNoAllowances(STEAKHOUSE_USDC);
         _assertNoAllowances(GAUNTLET_USDC_PRIME);
 
@@ -219,6 +247,127 @@ contract DCAVaultForkTest is Test {
     }
 
     // ------------------------------------------------------------------ helpers
+
+    // ------------------------------------------------------------------ V4
+    // Hookless V4 pools with liquidity on Base (checked 2026-10-08 via StateView.getLiquidity):
+    // WETH/USDC 500/10 and 3000/60, USDC/cbBTC 500/10.
+
+    function test_Fork_SwapExactInputV4_UsdcToWeth() public {
+        vm.prank(operator);
+        vault.morphoWithdraw(1_000e6);
+        uint256 minOut = _quoteV4(USDC, WETH, 3000, 60, 1_000e6) * 995 / 1000;
+        vm.prank(operator);
+        uint256 out = vault.swapExactInputV4(USDC, WETH, 3000, 60, 1_000e6, minOut, block.timestamp + 60);
+        assertGe(out, minOut);
+        assertEq(IERC20(WETH).balanceOf(address(vault)), out);
+        assertEq(IERC20(USDC).balanceOf(address(vault)), 0);
+        _assertNoAllowances(STEAKHOUSE_USDC);
+        _assertNoPermit2Allowances();
+    }
+
+    function test_Fork_SwapExactInputV4_UsdcToCbbtc() public {
+        vm.prank(operator);
+        vault.morphoWithdraw(500e6);
+        uint256 minOut = _quoteV4(USDC, CBBTC, 500, 10, 500e6) * 995 / 1000;
+        vm.prank(operator);
+        uint256 out = vault.swapExactInputV4(USDC, CBBTC, 500, 10, 500e6, minOut, block.timestamp + 60);
+        assertGe(out, minOut);
+        assertEq(IERC20(CBBTC).balanceOf(address(vault)), out);
+        _assertNoAllowances(STEAKHOUSE_USDC);
+        _assertNoPermit2Allowances();
+    }
+
+    function test_Fork_SwapExactInputV4_SellWethAutoDepositsToMorpho() public {
+        deal(WETH, address(vault), 1 ether);
+        uint256 totalBefore = vault.totalStable();
+        uint256 minOut = _quoteV4(WETH, USDC, 500, 10, 1 ether) * 995 / 1000;
+        vm.prank(operator);
+        uint256 out = vault.swapExactInputV4(WETH, USDC, 500, 10, 1 ether, minOut, block.timestamp + 60);
+        assertGe(out, minOut);
+        assertEq(IERC20(WETH).balanceOf(address(vault)), 0);
+        assertEq(IERC20(USDC).balanceOf(address(vault)), 0, "proceeds go to Morpho");
+        assertApproxEqAbs(vault.totalStable(), totalBefore + out, 2);
+        _assertNoAllowances(STEAKHOUSE_USDC);
+        _assertNoPermit2Allowances();
+    }
+
+    function test_Fork_Revert_SwapExactInputV4_SlippageTooHigh() public {
+        vm.prank(operator);
+        vault.morphoWithdraw(1_000e6);
+        uint256 quoted = _quoteV4(USDC, WETH, 3000, 60, 1_000e6);
+        vm.prank(operator);
+        vm.expectRevert();
+        vault.swapExactInputV4(USDC, WETH, 3000, 60, 1_000e6, quoted * 2, block.timestamp + 60);
+        assertEq(IERC20(USDC).balanceOf(address(vault)), 1_000e6);
+    }
+
+    // Native ETH (address(0)) V4 pool ETH/USDC 500/10, hookless.
+
+    function _whitelistNative() internal {
+        vm.prank(signer1);
+        uint256 id = vault.proposeAddToken(address(0));
+        vm.prank(signer2);
+        vault.approve(id);
+    }
+
+    function test_Fork_SwapExactInputV4_UsdcToNativeEth() public {
+        _whitelistNative();
+        vm.prank(operator);
+        vault.morphoWithdraw(1_000e6);
+        uint256 minOut = _quoteV4(USDC, address(0), 500, 10, 1_000e6) * 995 / 1000;
+        vm.prank(operator);
+        uint256 out = vault.swapExactInputV4(USDC, address(0), 500, 10, 1_000e6, minOut, block.timestamp + 60);
+        assertGe(out, minOut);
+        assertEq(address(vault).balance, out, "native ETH held idle in the vault");
+        assertEq(IERC20(USDC).balanceOf(address(vault)), 0);
+        _assertNoAllowances(STEAKHOUSE_USDC);
+        _assertNoPermit2Allowances();
+    }
+
+    function test_Fork_SwapExactInputV4_SellNativeEthAutoDepositsToMorpho() public {
+        _whitelistNative();
+        vm.deal(address(vault), 1 ether);
+        uint256 totalBefore = vault.totalStable();
+        uint256 minOut = _quoteV4(address(0), USDC, 500, 10, 1 ether) * 995 / 1000;
+        vm.prank(operator);
+        uint256 out = vault.swapExactInputV4(address(0), USDC, 500, 10, 1 ether, minOut, block.timestamp + 60);
+        assertGe(out, minOut);
+        assertEq(address(vault).balance, 0);
+        assertEq(IERC20(USDC).balanceOf(address(vault)), 0, "proceeds go to Morpho");
+        assertApproxEqAbs(vault.totalStable(), totalBefore + out, 2);
+        _assertNoAllowances(STEAKHOUSE_USDC);
+        _assertNoPermit2Allowances();
+    }
+
+    function _quoteV4(address tokenIn, address tokenOut, uint24 fee, int24 tickSpacing, uint256 amountIn)
+        internal
+        returns (uint256 out)
+    {
+        bool zeroForOne = tokenIn < tokenOut;
+        (out,) = IV4Quoter(V4_QUOTER)
+            .quoteExactInputSingle(
+                IV4Quoter.QuoteExactSingleParams({
+                    poolKey: IV4Router.PoolKey({
+                        currency0: zeroForOne ? tokenIn : tokenOut,
+                        currency1: zeroForOne ? tokenOut : tokenIn,
+                        fee: fee,
+                        tickSpacing: tickSpacing,
+                        hooks: address(0)
+                    }),
+                    zeroForOne: zeroForOne,
+                    exactAmount: uint128(amountIn),
+                    hookData: ""
+                })
+            );
+    }
+
+    function _assertNoPermit2Allowances() internal view {
+        address[3] memory toks = [USDC, WETH, CBBTC];
+        for (uint256 i; i < 3; ++i) {
+            (uint160 amount,,) = IPermit2(PERMIT2).allowance(address(vault), toks[i], UNIVERSAL_ROUTER);
+            assertEq(amount, 0, "permit2 -> universalRouter allowance");
+        }
+    }
 
     function _quote(address tokenIn, address tokenOut, uint24 fee, uint256 amountIn) internal returns (uint256 out) {
         (out,,,) = IQuoterV2(QUOTER)

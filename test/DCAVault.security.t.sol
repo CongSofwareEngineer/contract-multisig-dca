@@ -33,9 +33,11 @@ contract DCAVaultSecurityTest is VaultTestBase {
         amount = bound(amount, 0, 20_000e6);
 
         vm.startPrank(operator);
-        uint8 act = action % 5;
+        uint8 act = action % 6;
         if (act == 0) {
             try vault.swapExactInputV3(a, b, fee, amount, 1, block.timestamp) {} catch {}
+        } else if (act == 5) {
+            _tryV4(a, b, fee, f, amount);
         } else if (act == 1) {
             try vault.withdrawAndSwapV3(b, fee, amount, 1, block.timestamp) {} catch {}
         } else if (act == 2) {
@@ -51,6 +53,12 @@ contract DCAVaultSecurityTest is VaultTestBase {
         _assertNoAllowances();
     }
 
+    /// @dev Split out of the fuzz test to keep its stack small.
+    function _tryV4(address a, address b, uint24 fee, uint8 f, uint256 amount) internal {
+        int24[3] memory spacings = [TS_LOW, TS_MED, int24(1)];
+        try vault.swapExactInputV4(a, b, fee, spacings[f % 3], amount, 1, block.timestamp) {} catch {}
+    }
+
     function test_Invariant1_OperatorCannotUseSignerFunctions() public {
         vm.startPrank(operator);
         vm.expectRevert(DCAVaultStorage.NotSigner.selector);
@@ -61,6 +69,12 @@ contract DCAVaultSecurityTest is VaultTestBase {
         vault.approve(1);
         vm.expectRevert(DCAVaultStorage.NotSigner.selector);
         vault.proposeAddSigner(operator);
+        vm.expectRevert(DCAVaultStorage.NotSigner.selector);
+        vault.reject(1);
+        vm.expectRevert(DCAVaultStorage.NotSigner.selector);
+        vault.cancel(1);
+        vm.expectRevert(DCAVaultStorage.NotSigner.selector);
+        vault.pause();
         vm.stopPrank();
     }
 
@@ -80,15 +94,47 @@ contract DCAVaultSecurityTest is VaultTestBase {
         vault.swapExactInputV3(address(weth), address(usdc), FEE_LOW, 1 ether, 1500e6, block.timestamp);
     }
 
+    function test_Invariant1_V4RouterCannotPullMoreThanAmountIn() public {
+        v4Router.setPullExtra(true);
+        vm.prank(operator);
+        vm.expectRevert("InsufficientAllowance"); // Permit2 allowance is exactly amountIn
+        vault.swapExactInputV4(address(weth), address(usdc), FEE_LOW, TS_LOW, 1 ether, 1, block.timestamp);
+        assertEq(weth.balanceOf(address(vault)), 5 ether);
+    }
+
+    function test_Invariant1_V4ShortOutputIsCaughtByBalanceDelta() public {
+        v4Router.setDeliverHalf(true);
+        vm.prank(operator);
+        vm.expectRevert(DCAVaultStorage.InsufficientOutput.selector);
+        vault.swapExactInputV4(address(weth), address(usdc), FEE_LOW, TS_LOW, 1 ether, 1500e6, block.timestamp);
+    }
+
+    /// @dev Permit2 allowance to the UniversalRouter expires in the same block it is granted.
+    function test_Invariant3_V4Permit2AllowanceExpiresThisBlock() public {
+        vm.prank(operator);
+        vault.swapExactInputV4(address(weth), address(usdc), FEE_LOW, TS_LOW, 1 ether, 1, block.timestamp);
+        (uint160 amount, uint48 expiration,) = mockPermit2.allowance(address(vault), address(weth), universalRouter);
+        assertEq(amount, 0);
+        assertLe(expiration, block.timestamp);
+    }
+
     // =========================================================== #2 outputs always to address(this)
 
     function test_Invariant2_SwapRecipientIsVault() public {
         vm.prank(operator);
-        vault.swapExactInputV3(address(weth), address(cbbtc), FEE_MED, 1 ether, 1, block.timestamp);
+        vault.swapExactInputV3(address(cbbtc), address(usdc), FEE_MED, 1e7, 1, block.timestamp);
         assertEq(router.lastRecipient(), address(vault));
         vm.prank(operator);
         vault.withdrawAndSwapV3(address(weth), FEE_LOW, 100e6, 1, block.timestamp);
         assertEq(router.lastRecipient(), address(vault));
+        // V4: TAKE_ALL pays msg.sender of the UniversalRouter = the vault; nothing reaches the operator.
+        uint256 before = weth.balanceOf(address(vault));
+        vm.prank(operator);
+        vault.morphoWithdraw(100e6);
+        vm.prank(operator);
+        vault.swapExactInputV4(address(usdc), address(weth), FEE_LOW, TS_LOW, 100e6, 1, block.timestamp);
+        assertEq(weth.balanceOf(address(vault)), before + 0.05 ether);
+        assertEq(weth.balanceOf(operator), 0);
         _assertNothingLeaked();
     }
 
@@ -110,12 +156,17 @@ contract DCAVaultSecurityTest is VaultTestBase {
         _assertNoAllowances();
         vault.swapExactInputV3(address(cbbtc), address(usdc), FEE_LOW, 1e7, 1, block.timestamp);
         _assertNoAllowances();
+        vault.morphoWithdraw(100e6);
+        vault.swapExactInputV4(address(usdc), address(weth), FEE_LOW, TS_LOW, 100e6, 1, block.timestamp);
+        _assertNoAllowances();
+        vault.swapExactInputV4(address(weth), address(usdc), FEE_MED, TS_MED, 1 ether, 1, block.timestamp);
+        _assertNoAllowances();
         vault.morphoWithdraw(10e6);
         vault.morphoDeposit(10e6);
         _assertNoAllowances();
         vm.stopPrank();
 
-        MockMorphoVault newVault = new MockMorphoVault(usdc);
+        MockMorphoVault newVault = _newMorphoVault(usdc);
         _passProposal(DCAVaultStorage.ProposalType.ChangeMorphoVault, abi.encode(address(newVault)));
         _assertNoAllowances();
         assertEq(usdc.allowance(address(vault), address(newVault)), 0);
@@ -311,7 +362,7 @@ contract DCAVaultSecurityTest is VaultTestBase {
         }
     }
 
-    // =========================================================== #10 rejects ETH
+    // =========================================================== #10 rejects ETH (except native-ETH V4 buy output)
 
     function test_Invariant10_RejectsEth() public {
         vm.deal(user, 1 ether);
@@ -324,6 +375,40 @@ contract DCAVaultSecurityTest is VaultTestBase {
         vm.prank(user);
         (ok,) = address(vault).call{value: 1}(abi.encodeCall(vault.depositAndSupply, (1)));
         assertFalse(ok, "non-payable functions reject ETH");
+        assertEq(address(vault).balance, 0);
+    }
+
+    /// @dev Whitelisting native ETH does not open receive(): it only accepts ETH inside a V4 swap buying ETH.
+    function test_Invariant10_RejectsEthWhenNativeWhitelisted() public {
+        _passProposal(DCAVaultStorage.ProposalType.AddToken, abi.encode(address(0)));
+        v4Router.setRate(address(usdc), address(0), 5e8, 1);
+        vm.deal(address(v4Router), 10 ether);
+        vm.deal(user, 1 ether);
+
+        vm.prank(user);
+        vm.expectRevert(DCAVaultStorage.UnexpectedNative.selector);
+        payable(address(vault)).transfer(1 ether);
+
+        // A real native buy works...
+        usdc.mint(address(vault), 100e6);
+        vm.prank(operator);
+        vault.swapExactInputV4(address(usdc), address(0), FEE_LOW, TS_LOW, 100e6, 1, block.timestamp);
+        assertEq(address(vault).balance, 0.05 ether);
+
+        // ...and the window closes right after it.
+        vm.prank(user);
+        vm.expectRevert(DCAVaultStorage.UnexpectedNative.selector);
+        payable(address(vault)).transfer(1 ether);
+    }
+
+    /// @dev A router pushing ETH during a swap whose output is NOT native ETH is rejected (whole swap reverts).
+    function test_Invariant10_RouterCannotPushEthDuringErc20Swap() public {
+        vm.deal(address(v4Router), 1 ether);
+        v4Router.setPushNative(true);
+        usdc.mint(address(vault), 100e6);
+        vm.prank(operator);
+        vm.expectRevert(bytes("native take failed"));
+        vault.swapExactInputV4(address(usdc), address(weth), FEE_LOW, TS_LOW, 100e6, 1, block.timestamp);
         assertEq(address(vault).balance, 0);
     }
 
@@ -369,7 +454,7 @@ contract DCAVaultSecurityTest is VaultTestBase {
         vm.startPrank(operator);
         vault.withdrawAndSwapV3(address(weth), FEE_LOW, 100e6, 1, block.timestamp);
         vault.swapExactInputV3(address(weth), address(usdc), FEE_LOW, 1 ether, 1, block.timestamp);
-        vault.swapExactInputV3(address(weth), address(cbbtc), FEE_MED, 1 ether, 1, block.timestamp);
+        vault.swapExactInputV3(address(cbbtc), address(usdc), FEE_MED, 1e7, 1, block.timestamp);
         vault.morphoWithdraw(5e6);
         vault.morphoDeposit(5e6);
         // a junk tokenIn is rejected by the whitelist, never by the junk token's own revert
@@ -379,7 +464,7 @@ contract DCAVaultSecurityTest is VaultTestBase {
 
         // views
         vault.getBalances();
-        vault.totalUsdc();
+        vault.totalStable();
 
         // signers: withdraw + vault migration
         uint256[] memory amounts = new uint256[](2);
@@ -390,7 +475,7 @@ contract DCAVaultSecurityTest is VaultTestBase {
             abi.encode(_addrs(address(usdc), address(cbbtc)), amounts, treasury)
         );
         assertEq(usdc.balanceOf(treasury), 100e6);
-        MockMorphoVault newVault = new MockMorphoVault(usdc);
+        MockMorphoVault newVault = _newMorphoVault(usdc);
         _passProposal(DCAVaultStorage.ProposalType.ChangeMorphoVault, abi.encode(address(newVault)));
         assertEq(vault.morphoVault(), address(newVault));
 
@@ -407,7 +492,7 @@ contract DCAVaultSecurityTest is VaultTestBase {
 
     function test_Security_ReentrancyBlocked() public {
         ReentrantMorphoVault evil = new ReentrantMorphoVault(usdc);
-        address[] memory tokens = _addrs(address(usdc));
+        address[] memory tokens = _addrs(address(weth));
         // the evil vault is made an operator so the only thing stopping it is nonReentrant
         DCAVault v = new DCAVault(
             address(usdc),
@@ -419,7 +504,8 @@ contract DCAVaultSecurityTest is VaultTestBase {
             _addrs(address(evil)),
             _addrs(treasury),
             tokens,
-            new uint24[](0)
+            new uint24[](0),
+            _tickSpacings()
         );
         evil.arm(address(v));
         usdc.mint(user, 10e6);
@@ -428,6 +514,124 @@ contract DCAVaultSecurityTest is VaultTestBase {
         vm.expectRevert(bytes4(keccak256("ReentrancyGuardReentrantCall()")));
         v.depositAndSupply(10e6);
         vm.stopPrank();
+    }
+
+    // =========================================================== cancel needs >= 50% rejections
+
+    /// @dev A compromised signer can neither cancel another signer's proposal by rejecting it alone
+    ///      nor by spamming new proposals; the honest proposal still executes.
+    function test_Security_SingleSignerCannotCancelOthers() public {
+        address op2 = makeAddr("op2");
+        vm.prank(signer1);
+        uint256 id = vault.proposeAddOperator(op2);
+
+        vm.startPrank(signer3); // malicious
+        vault.reject(id);
+        for (uint256 i; i < 5; ++i) {
+            vault.proposeAddWithdrawAddress(makeAddr(string(abi.encodePacked("spam", vm.toString(i)))));
+        }
+        vm.expectRevert(DCAVaultStorage.NotProposer.selector);
+        vault.cancel(id);
+        vm.stopPrank();
+
+        (,,,,, bool cancelled,) = vault.getProposal(id);
+        assertFalse(cancelled);
+        vm.prank(signer2);
+        vault.approve(id);
+        assertTrue(vault.isOperator(op2));
+    }
+
+    // =========================================================== Morpho vault changes only via multisig
+
+    /// @dev Operator / anyone cannot propose; one signer's vote is below threshold (2 of 3), so the
+    ///      Morpho address stays put until a second signer approves.
+    function test_Security_ChangeMorphoVaultNeedsThreshold() public {
+        _deposit(100e6);
+        uint256 total = vault.totalStable();
+        MockMorphoVault newVault = _newMorphoVault(usdc);
+
+        vm.prank(operator);
+        vm.expectRevert(DCAVaultStorage.NotSigner.selector);
+        vault.proposeChangeMorphoVault(address(newVault));
+        vm.prank(attacker);
+        vm.expectRevert(DCAVaultStorage.NotSigner.selector);
+        vault.proposeChangeMorphoVault(address(newVault));
+
+        vm.prank(signer1);
+        uint256 id = vault.proposeChangeMorphoVault(address(newVault));
+        assertEq(vault.morphoVault(), address(morpho), "1 vote must not change the vault");
+
+        vm.prank(attacker);
+        vm.expectRevert(DCAVaultStorage.NotSigner.selector);
+        vault.approve(id);
+        assertEq(vault.morphoVault(), address(morpho));
+
+        vm.prank(signer2);
+        vault.approve(id);
+        assertEq(vault.morphoVault(), address(newVault));
+        assertEq(newVault.balanceOf(address(vault)), total);
+    }
+
+    /// @dev Router / Permit2 / UniversalRouter can only change through a threshold proposal.
+    function test_Security_ChangeProtocolAddressesNeedThreshold() public {
+        address evil = makeAddr("evilRouter");
+        address[2] memory outsiders = [operator, attacker];
+        for (uint256 i; i < outsiders.length; ++i) {
+            vm.startPrank(outsiders[i]);
+            vm.expectRevert(DCAVaultStorage.NotSigner.selector);
+            vault.proposeChangeUniV3Router(evil);
+            vm.expectRevert(DCAVaultStorage.NotSigner.selector);
+            vault.proposeChangePermit2(evil);
+            vm.expectRevert(DCAVaultStorage.NotSigner.selector);
+            vault.proposeChangeUniversalRouter(evil);
+            vm.stopPrank();
+        }
+
+        vm.startPrank(signer1);
+        uint256 a = vault.proposeChangeUniV3Router(evil);
+        uint256 b = vault.proposeChangePermit2(evil);
+        uint256 c = vault.proposeChangeUniversalRouter(evil);
+        vm.stopPrank();
+        assertEq(vault.uniV3Router(), address(router), "1 vote must not change the router");
+        assertEq(vault.permit2(), permit2);
+        assertEq(vault.universalRouter(), universalRouter);
+
+        vm.startPrank(attacker);
+        vm.expectRevert(DCAVaultStorage.NotSigner.selector);
+        vault.approve(a);
+        vm.expectRevert(DCAVaultStorage.NotSigner.selector);
+        vault.approve(b);
+        vm.expectRevert(DCAVaultStorage.NotSigner.selector);
+        vault.approve(c);
+        vm.stopPrank();
+        assertEq(vault.uniV3Router(), address(router));
+    }
+
+    /// @dev After a router switch the old router holds no allowance and cannot pull anything (invariant 3).
+    function test_Security_OldRouterHasNoPowerAfterChange() public {
+        vm.prank(operator);
+        vault.withdrawAndSwapV3(address(weth), FEE_LOW, 100e6, 1, block.timestamp);
+
+        _passProposal(DCAVaultStorage.ProposalType.ChangeUniV3Router, abi.encode(makeAddr("newRouter")));
+
+        address[3] memory toks = [address(usdc), address(weth), address(cbbtc)];
+        for (uint256 i; i < toks.length; ++i) {
+            assertEq(MockERC20(toks[i]).allowance(address(vault), address(router)), 0, "old router allowance");
+        }
+        vm.prank(address(router));
+        vm.expectRevert();
+        weth.transferFrom(address(vault), address(router), 1);
+    }
+
+    // =========================================================== funds leave only to whitelisted receivers
+
+    /// @dev Operator can only route USDC <-> whitelisted token; token <-> token is rejected.
+    function testFuzz_Security_SwapNeedsUsdcSide(uint8 dir, uint256 amount) public {
+        amount = bound(amount, 1, 1e7);
+        (address a, address b) = dir % 2 == 0 ? (address(weth), address(cbbtc)) : (address(cbbtc), address(weth));
+        vm.prank(operator);
+        vm.expectRevert(DCAVaultStorage.PairNotAllowed.selector);
+        vault.swapExactInputV3(a, b, FEE_MED, amount, 1, block.timestamp);
     }
 
     // =========================================================== helpers

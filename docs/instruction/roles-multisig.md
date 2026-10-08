@@ -20,7 +20,7 @@ Sub-logics:
 
 | Role | Can do |
 |---|---|
-| signer | propose / approve / cancel own proposals, `pause()` alone |
+| signer | propose / approve / reject, cancel own proposals (only while still a signer), `pause()` alone |
 | operator | `swapExactInputV3`, `withdrawAndSwapV3`, `morphoDeposit`, `morphoWithdraw` (only while not paused) |
 | anyone | `depositAndSupply` (USDC only), views |
 
@@ -38,7 +38,8 @@ Cold / hardware wallets of the owner. All config changes and all withdrawals nee
 - Invariant #5: signer count can never drop below 2 — checked at propose time **and** at execute time, so two concurrent `RemoveSigner` proposals cannot bypass it.
 - A signer can never also be an operator (checked in constructor and both Add proposals).
 ### Edge cases
-- Removing a signer instantly removes their votes from every pending proposal (votes are re-counted from `signers[]`). If the same address is re-added later, its old `hasApproved` flags count again.
+- Removing a signer instantly removes their approvals and rejections from every pending proposal (votes are re-counted from `signers[]`). If the same address is re-added later, its old flags count again ([proposal-system §2](proposal-system.md#2-vote-counting-expiry--rejection)).
+- Deploying with exactly 2 signers gives threshold 1: each signer acts alone (also true after 3 → 2 removals).
 - Array order changes after removal (swap-and-pop); don't rely on index.
 
 ## 2. Operators
@@ -59,7 +60,7 @@ Only destinations allowed for `WithdrawBatch`.
 ### Entry points
 Constructor `_withdrawAddresses[]`; proposals `AddWithdrawAddress` (non-zero), `RemoveWithdrawAddress`.
 ### Security
-Invariant #4. `to` is re-checked at execute time: removing an address cancels pending withdrawals to it in effect.
+Invariant #4. Every outgoing transfer must go to an address in `isWithdrawAddress`; anything else reverts. `to` is re-checked at execute time: removing an address cancels pending withdrawals to it in effect.
 
 ## 4. Threshold
 ### Purpose

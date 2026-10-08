@@ -7,6 +7,8 @@ import {DCAVaultStorage} from "../../src/vault/DCAVaultStorage.sol";
 import {MockERC20} from "../mocks/MockERC20.sol";
 import {MockMorphoVault} from "../mocks/MockMorphoVault.sol";
 import {MockSwapRouter} from "../mocks/MockSwapRouter.sol";
+import {MockPermit2} from "../mocks/MockPermit2.sol";
+import {MockUniversalRouter} from "../mocks/MockUniversalRouter.sol";
 
 /// @dev Deploys the vault against mocks: 3 signers (threshold 2), 1 operator, 1 withdraw address.
 abstract contract VaultTestBase is Test {
@@ -16,6 +18,8 @@ abstract contract VaultTestBase is Test {
     MockERC20 internal cbbtc;
     MockMorphoVault internal morpho;
     MockSwapRouter internal router;
+    MockPermit2 internal mockPermit2;
+    MockUniversalRouter internal v4Router;
 
     address internal signer1 = makeAddr("signer1");
     address internal signer2 = makeAddr("signer2");
@@ -24,18 +28,24 @@ abstract contract VaultTestBase is Test {
     address internal treasury = makeAddr("treasury");
     address internal user = makeAddr("user");
     address internal attacker = makeAddr("attacker");
-    address internal permit2 = makeAddr("permit2");
-    address internal universalRouter = makeAddr("universalRouter");
+    address internal permit2;
+    address internal universalRouter;
 
     uint24 internal constant FEE_LOW = 500;
     uint24 internal constant FEE_MED = 3000;
+    int24 internal constant TS_LOW = 10;
+    int24 internal constant TS_MED = 60;
 
     function setUp() public virtual {
         usdc = new MockERC20("USD Coin", "USDC", 6);
         weth = new MockERC20("Wrapped Ether", "WETH", 18);
         cbbtc = new MockERC20("Coinbase BTC", "cbBTC", 8);
-        morpho = new MockMorphoVault(usdc);
+        morpho = _newMorphoVault(usdc);
         router = new MockSwapRouter();
+        mockPermit2 = new MockPermit2();
+        v4Router = new MockUniversalRouter(mockPermit2);
+        permit2 = address(mockPermit2);
+        universalRouter = address(v4Router);
 
         // 1 USDC (1e6) -> 0.0005 WETH (5e14)  => num/den = 5e14 / 1e6 = 5e8
         router.setRate(address(usdc), address(weth), 5e8, 1);
@@ -47,6 +57,11 @@ abstract contract VaultTestBase is Test {
         router.setRate(address(cbbtc), address(usdc), 1e3, 1);
         // 1 WETH -> 0.02 cbBTC (2e6)
         router.setRate(address(weth), address(cbbtc), 2e6, 1e18);
+        // V4 uses the same rates.
+        v4Router.setRate(address(usdc), address(weth), 5e8, 1);
+        v4Router.setRate(address(weth), address(usdc), 2e9, 1e18);
+        v4Router.setRate(address(usdc), address(cbbtc), 1, 1e3);
+        v4Router.setRate(address(cbbtc), address(usdc), 1e3, 1);
 
         vault = _deploy(_addrs(signer1, signer2, signer3), _addrs(operator), _addrs(treasury));
     }
@@ -54,17 +69,36 @@ abstract contract VaultTestBase is Test {
     // ---------------------------------------------------------------- helpers
 
     function _deploy(address[] memory s, address[] memory o, address[] memory w) internal returns (DCAVault) {
-        address[] memory tokens = new address[](3);
-        tokens[0] = address(usdc);
-        tokens[1] = address(weth);
-        tokens[2] = address(cbbtc);
+        // Tradable tokens only — the stable (usdc) is passed separately.
+        address[] memory tokens = new address[](2);
+        tokens[0] = address(weth);
+        tokens[1] = address(cbbtc);
         uint24[] memory fees = new uint24[](2);
         fees[0] = FEE_LOW;
         fees[1] = FEE_MED;
-        return
-            new DCAVault(
-                address(usdc), address(router), permit2, universalRouter, address(morpho), s, o, w, tokens, fees
-            );
+        return new DCAVault(
+            address(usdc),
+            address(router),
+            permit2,
+            universalRouter,
+            address(morpho),
+            s,
+            o,
+            w,
+            tokens,
+            fees,
+            _tickSpacings()
+        );
+    }
+
+    function _tickSpacings() internal pure returns (int24[] memory ts) {
+        ts = new int24[](2);
+        ts[0] = TS_LOW;
+        ts[1] = TS_MED;
+    }
+
+    function _newMorphoVault(MockERC20 asset) internal returns (MockMorphoVault v) {
+        v = new MockMorphoVault(asset);
     }
 
     function _addrs(address a) internal pure returns (address[] memory r) {
@@ -107,5 +141,11 @@ abstract contract VaultTestBase is Test {
         assertEq(cbbtc.allowance(address(vault), address(router)), 0, "cbbtc->router");
         assertEq(usdc.allowance(address(vault), address(morpho)), 0, "usdc->morpho");
         assertEq(usdc.allowance(address(vault), permit2), 0, "usdc->permit2");
+        assertEq(weth.allowance(address(vault), permit2), 0, "weth->permit2");
+        assertEq(cbbtc.allowance(address(vault), permit2), 0, "cbbtc->permit2");
+        (uint160 a1,,) = mockPermit2.allowance(address(vault), address(usdc), universalRouter);
+        (uint160 a2,,) = mockPermit2.allowance(address(vault), address(weth), universalRouter);
+        (uint160 a3,,) = mockPermit2.allowance(address(vault), address(cbbtc), universalRouter);
+        assertEq(uint256(a1) + a2 + a3, 0, "permit2->universalRouter");
     }
 }

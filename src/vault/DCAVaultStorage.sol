@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
-import {IERC4626} from "@openzeppelin/contracts/interfaces/IERC4626.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 
 /// @title DCAVaultStorage
@@ -25,7 +24,13 @@ abstract contract DCAVaultStorage is ReentrancyGuard {
         AddToken,
         RemoveToken,
         SetAllowedFee,
-        Unpause
+        Unpause,
+        // Appended (not inserted) so existing enum values stay stable for off-chain tooling.
+        ChangeUniV3Router,
+        ChangePermit2,
+        ChangeUniversalRouter,
+        SetAllowedTickSpacing,
+        ChangeStableToken
     }
 
     struct Proposal {
@@ -47,44 +52,65 @@ abstract contract DCAVaultStorage is ReentrancyGuard {
     uint256 public constant PROPOSAL_TTL = 7 days;
     /// @notice `version` value emitted in `Swapped` for Uniswap V3 swaps.
     uint8 public constant SWAP_VERSION_V3 = 3;
-
-    address public immutable usdc;
-    address public immutable uniV3Router;
-    /// @dev Phase 2 (V4). Stored now so the deployed contract does not need to change later.
-    address public immutable permit2;
-    /// @dev Phase 2 (V4).
-    address public immutable universalRouter;
+    /// @notice `version` value emitted in `Swapped` for Uniswap V4 swaps.
+    uint8 public constant SWAP_VERSION_V4 = 4;
+    /// @notice Uniswap V4 tick spacing bounds (v4-core TickMath.MIN/MAX_TICK_SPACING).
+    int24 public constant MIN_TICK_SPACING = 1;
+    int24 public constant MAX_TICK_SPACING = type(int16).max;
+    /// @notice Uniswap V4 currency id for native ETH. Whitelisting it in `allowedToken` enables native-ETH
+    ///         V4 pools; V3 (SwapRouter02) cannot trade it.
+    address public constant NATIVE = address(0);
 
     // ------------------------------------------------------------------
     // State
     // ------------------------------------------------------------------
 
-    /// @notice Current MetaMorpho USDC vault. Changed only via a `ChangeMorphoVault` proposal.
+    /// @notice The single stablecoin: the only token that can be deposited, the only token supplied to Morpho,
+    ///         and one side of every swap. Changed only via `ChangeStableToken`, which first sweeps every unit
+    ///         of the old stable (idle + Morpho) out to a withdraw address.
+    address public stableToken;
+    /// @notice Current Morpho vault for `stableToken`. Changed only via a `ChangeMorphoVault` proposal.
     address public morphoVault;
+    /// @notice Uniswap V3 SwapRouter02. Changed only via a `ChangeUniV3Router` proposal.
+    /// @dev Safe to swap out: the vault never holds a standing approval to the old router (invariant 3).
+    address public uniV3Router;
+    /// @notice Permit2 (V4 swaps). Changed only via a `ChangePermit2` proposal.
+    address public permit2;
+    /// @notice Uniswap UniversalRouter (V4 swaps). Changed only via a `ChangeUniversalRouter` proposal.
+    address public universalRouter;
 
     mapping(address => bool) public isSigner;
     address[] public signers;
     mapping(address => bool) public isOperator;
     mapping(address => bool) public isWithdrawAddress;
 
+    /// @notice Tradable tokens (bought / sold against `stableToken`, held idle in the vault — never sent to
+    ///         Morpho). Never contains `stableToken`. May contain `NATIVE` (address(0)) for V4 native-ETH pools.
     mapping(address => bool) public allowedToken;
     /// @dev Mirror of `allowedToken` so views can list whitelisted balances without ever
     ///      touching a non-whitelisted (possibly malicious) token.
     address[] internal _allowedTokenList;
     mapping(uint24 => bool) public allowedFee;
+    /// @notice V4 tick spacings the operator may use. Together with `allowedFee` and `hooks = address(0)`
+    ///         this bounds which V4 pools a swap can route through.
+    mapping(int24 => bool) public allowedTickSpacing;
 
     bool public paused;
+    /// @dev True only while `swapExactInputV4` is waiting for native ETH output; `receive()` rejects ETH
+    ///      at every other moment.
+    bool internal _expectingNative;
 
     /// @dev Raw storage; `getProposal(id)` adds live vote count, threshold and expiry.
     mapping(uint256 => Proposal) public proposals;
     mapping(uint256 => mapping(address => bool)) public hasApproved;
+    mapping(uint256 => mapping(address => bool)) public hasRejected;
     uint256 public proposalCount;
 
     // ------------------------------------------------------------------
     // Events
     // ------------------------------------------------------------------
 
-    event Deposited(address indexed from, uint256 usdcAmount, uint256 shares);
+    event Deposited(address indexed from, uint256 amount, uint256 shares);
     event MorphoDeposited(uint256 assets, uint256 shares);
     event MorphoWithdrawn(uint256 assets, uint256 shares);
     event Swapped(
@@ -97,6 +123,7 @@ abstract contract DCAVaultStorage is ReentrancyGuard {
     );
     event ProposalCreated(uint256 indexed id, ProposalType pType, address indexed proposer);
     event ProposalApproved(uint256 indexed id, address indexed signer);
+    event ProposalRejected(uint256 indexed id, address indexed signer);
     event ProposalExecuted(uint256 indexed id);
     event ProposalCancelled(uint256 indexed id);
     event Withdrawn(address indexed token, address indexed to, uint256 amount);
@@ -107,8 +134,15 @@ abstract contract DCAVaultStorage is ReentrancyGuard {
     event WithdrawAddressAdded(address indexed account);
     event WithdrawAddressRemoved(address indexed account);
     event MorphoVaultChanged(address oldVault, address newVault, uint256 migratedAssets);
+    event UniV3RouterChanged(address oldRouter, address newRouter);
+    event Permit2Changed(address oldPermit2, address newPermit2);
+    event UniversalRouterChanged(address oldRouter, address newRouter);
+    event StableTokenChanged(
+        address oldStable, address newStable, address oldMorphoVault, address newMorphoVault, uint256 sweptAmount
+    );
     event TokenAllowed(address token, bool allowed);
     event FeeAllowed(uint24 fee, bool allowed);
+    event TickSpacingAllowed(int24 tickSpacing, bool allowed);
     event Paused(address indexed by);
     event Unpaused();
 
@@ -126,14 +160,20 @@ abstract contract DCAVaultStorage is ReentrancyGuard {
     error Duplicate();
     error RoleConflict();
     error TooFewSigners();
-    error UsdcNotAllowed();
-    error VaultAssetMismatch();
+    error StableNotTradable();
     error SameMorphoVault();
+    error SameAddress();
     error TokenNotAllowed();
-    error CannotRemoveUsdc();
+    error NativeNotSupported();
+    error NativeTransferFailed();
+    error UnexpectedNative();
     error FeeNotAllowed();
     error InvalidFee();
-    error SameToken();
+    error TickSpacingNotAllowed();
+    error InvalidTickSpacing();
+    error AmountTooLarge();
+    error ExcessiveInput();
+    error PairNotAllowed();
     error DeadlinePassed();
     error InsufficientBalance();
     error InsufficientOutput();
@@ -145,7 +185,7 @@ abstract contract DCAVaultStorage is ReentrancyGuard {
     error ProposalIsCancelled();
     error ProposalExpired();
     error AlreadyApproved();
-    error NotImplemented();
+    error AlreadyVoted();
 
     // ------------------------------------------------------------------
     // Modifiers
@@ -171,19 +211,24 @@ abstract contract DCAVaultStorage is ReentrancyGuard {
     // ------------------------------------------------------------------
 
     /// @dev Sets protocol addresses only; roles / whitelists are seeded by `DCAVault`'s constructor.
-    /// @param _usdc USDC token
+    /// @param _stableToken the single stablecoin (e.g. USDC)
     /// @param _uniV3Router Uniswap V3 SwapRouter02
-    /// @param _permit2 Permit2 (Phase 2)
-    /// @param _universalRouter Uniswap UniversalRouter (Phase 2)
-    /// @param _morphoVault MetaMorpho vault whose `asset()` is USDC
-    constructor(address _usdc, address _uniV3Router, address _permit2, address _universalRouter, address _morphoVault) {
+    /// @param _permit2 Permit2 (V4 swaps)
+    /// @param _universalRouter Uniswap UniversalRouter (V4 swaps)
+    /// @param _morphoVault Morpho vault (ERC-4626) for `_stableToken`, chosen by the owner
+    constructor(
+        address _stableToken,
+        address _uniV3Router,
+        address _permit2,
+        address _universalRouter,
+        address _morphoVault
+    ) {
         if (
-            _usdc == address(0) || _uniV3Router == address(0) || _permit2 == address(0)
+            _stableToken == address(0) || _uniV3Router == address(0) || _permit2 == address(0)
                 || _universalRouter == address(0) || _morphoVault == address(0)
         ) revert ZeroAddress();
-        if (IERC4626(_morphoVault).asset() != _usdc) revert VaultAssetMismatch();
 
-        usdc = _usdc;
+        stableToken = _stableToken;
         uniV3Router = _uniV3Router;
         permit2 = _permit2;
         universalRouter = _universalRouter;

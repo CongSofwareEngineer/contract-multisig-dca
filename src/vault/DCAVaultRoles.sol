@@ -4,7 +4,7 @@ pragma solidity ^0.8.24;
 import {DCAVaultStorage} from "./DCAVaultStorage.sol";
 
 /// @title DCAVaultRoles
-/// @notice Signers, operators, withdraw addresses, token / fee whitelists and `getThreshold()`.
+/// @notice Signers, operators, withdraw addresses, token / fee / tick-spacing whitelists and `getThreshold()`.
 /// @dev Internal setters are called from the constructor and from proposal execution only.
 ///      signer ∩ operator = ∅ is enforced here, so every path that adds a role goes through it.
 abstract contract DCAVaultRoles is DCAVaultStorage {
@@ -17,7 +17,7 @@ abstract contract DCAVaultRoles is DCAVaultStorage {
         return signers;
     }
 
-    /// @notice Returns all whitelisted tokens.
+    /// @notice Returns all whitelisted tradable tokens (never includes `stableToken`; address(0) = native ETH).
     function getAllowedTokens() external view returns (address[] memory) {
         return _allowedTokenList;
     }
@@ -75,8 +75,10 @@ abstract contract DCAVaultRoles is DCAVaultStorage {
         emit WithdrawAddressRemoved(a);
     }
 
+    /// @dev `token == NATIVE` (address(0)) is allowed on purpose: it whitelists native ETH for V4 pools.
     function _addToken(address token) internal {
-        if (token == address(0)) revert ZeroAddress();
+        // Stable and tradable lists stay disjoint, so "is this the stable?" is always one address compare.
+        if (token == stableToken) revert StableNotTradable();
         if (allowedToken[token]) revert Duplicate();
         allowedToken[token] = true;
         _allowedTokenList.push(token);
@@ -84,7 +86,6 @@ abstract contract DCAVaultRoles is DCAVaultStorage {
     }
 
     function _removeToken(address token) internal {
-        if (token == usdc) revert CannotRemoveUsdc();
         if (!allowedToken[token]) revert NotFound();
         allowedToken[token] = false;
         _removeFromArray(_allowedTokenList, token);
@@ -95,6 +96,12 @@ abstract contract DCAVaultRoles is DCAVaultStorage {
         if (fee == 0) revert InvalidFee();
         allowedFee[fee] = allowed;
         emit FeeAllowed(fee, allowed);
+    }
+
+    function _setAllowedTickSpacing(int24 tickSpacing, bool allowed) internal {
+        if (tickSpacing < MIN_TICK_SPACING || tickSpacing > MAX_TICK_SPACING) revert InvalidTickSpacing();
+        allowedTickSpacing[tickSpacing] = allowed;
+        emit TickSpacingAllowed(tickSpacing, allowed);
     }
 
     // ------------------------------------------------------------------

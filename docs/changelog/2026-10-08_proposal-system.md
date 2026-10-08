@@ -1,13 +1,20 @@
 # Proposal System
 - **Date**: 2026-10-08
 - **Feature**: proposal-system (→ docs/instruction/proposal-system.md)
-- **Type**: Added
-- **Files**: `src/DCAVault.sol`, `src/vault/DCAVaultStorage.sol`, `src/vault/DCAVaultProposals.sol`, `test/DCAVault.t.sol`, `test/DCAVault.security.t.sol`
+- **Type**: Added, Changed
+- **Files**: `src/DCAVault.sol`, `src/vault/DCAVaultStorage.sol`, `src/vault/DCAVaultProposals.sol`, `src/vault/DCAVaultRoles.sol`, `test/DCAVault.t.sol`, `test/DCAVault.security.t.sol`
 - **What**:
-  - **Lifecycle**: propose (auto-approve) / approve (auto-execute at threshold) / cancel (proposer only); ids start at 1.
+  - **Lifecycle**: propose (auto-approve) / approve (auto-execute at threshold) / cancel (`onlySigner`: proposer only, own proposal, and only while still a signer); ids start at 1. Several proposals may be pending at once; creating one never affects the others.
+  - **Reject voting**: new `reject(id)` (`onlySigner`) + `hasRejected`, `ProposalRejected` event, `AlreadyVoted` error, `getRejections(id)` view. A proposal is cancelled once valid rejections (current signers only) reach `getThreshold()` (≥ 50%). One vote per signer: approve or reject.
+  - **ChangeMorphoVault validation**: only `newVault != 0` and `!= current` (both at propose and at execute); no factory / `asset()` check (see morpho-integration).
+  - **Protocol address proposals**: new `ChangeUniV3Router`, `ChangePermit2`, `ChangeUniversalRouter` (appended after `Unpause` in the enum) + helpers `proposeChangeUniV3Router` / `proposeChangePermit2` / `proposeChangeUniversalRouter`; `!= 0` and `!= current` (`SameAddress`) at propose and execute; events `UniV3RouterChanged`, `Permit2Changed`, `UniversalRouterChanged`.
+  - **SetAllowedTickSpacing**: new type `SetAllowedTickSpacing(int24 tickSpacing, bool allowed)` (appended after `ChangeUniversalRouter`) + helper `proposeSetAllowedTickSpacing`; range `1..32767` checked at propose and execute (`InvalidTickSpacing`). See swap-v4.
   - **Vote counting**: re-counted from current `signers[]` on every approval; 7-day expiry (inclusive).
-  - **Types**: all 12 ProposalTypes from spec §5.3; propose-time validation + execute-time re-validation.
-  - **Helpers**: 12 `proposeXxx` helpers calling internal `_propose`.
-- **Tests**: mechanics, every type, expiry boundary, invariants #6/#7. 125 passed, 0 failed (88 unit, 27 security, 10 fork on Base mainnet). Without BASE_RPC_URL the fork suite is skipped.
+  - **Types**: 16 ProposalTypes (12 from spec §5.3 + 3 protocol-address changes + `SetAllowedTickSpacing`); propose-time validation + execute-time re-validation.
+  - **Helpers**: 16 `proposeXxx` helpers calling internal `_propose`.
+- **Tests**: mechanics, every type, expiry boundary, invariants #6/#7; reject: `test_Reject_*` (threshold 3 and 4 signers, cancelled cannot be approved, removed signer's rejection not counted), `test_Revert_Reject_*` (not signer, twice, after approve, expired, executed, non-existent), `test_Revert_Approve_AfterReject`, `test_Propose_DoesNotCancelOtherPending`, security `test_Security_SingleSignerCannotCancelOthers`; `test_Revert_Cancel_ProposerNoLongerSigner`; `test_Proposal_ChangeUniV3RouterSwapsUseNewRouter`, `test_Proposal_ChangePermit2`, `test_Proposal_ChangeUniversalRouter`, `test_Revert_Proposal_ChangeProtocolAddressZero` / `...Same` / `test_Revert_Proposal_ChangeUniV3RouterSameAtExecute`; security `test_Security_ChangeProtocolAddressesNeedThreshold`; `test_Proposal_SetAllowedTickSpacing`, `test_Revert_Proposal_SetAllowedTickSpacingOutOfRange`, `test_Revert_Proposal_SetAllowedTickSpacingNotSigner`. `forge test` (incl. Base mainnet fork): 174 passed, 0 failed (125 unit, 35 security, 14 fork).
 - **Why**:
   - Initial implementation of DCA_VAULT_SPEC.md §5.3.
+  - `cancel` role check + changeable protocol addresses: owner request in the 2026-10-08 security review — every state-changing function must check the role, and Uniswap V3 / V4 / Permit2 addresses must be changeable by the multisig (USDC stays immutable by owner decision).
+  - SetAllowedTickSpacing: owner request (2026-10-08) — V4 tick spacing must be settable by the multisig like the fee tiers.
+  - Reject voting: owner decision — another signer's proposal may only be cancelled when ≥ 50% of signers vote against it, so a single (possibly compromised) signer cannot spam-cancel proposals.
