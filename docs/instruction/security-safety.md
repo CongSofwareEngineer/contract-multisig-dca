@@ -5,16 +5,17 @@
 How the vault keeps funds safe even if the operator key is stolen.
 Sub-logics:
 1. Pause / Unpause
-2. Token whitelist & anti-junk-token
+2. Stable / tradable tokens & anti-junk-token
 3. WithdrawBatch
 4. The §10 invariants and their tests
 5. Accepted risks
 
 ## Shared
 - Code: `pause()` + `Unpause` in `src/vault/DCAVaultProposals.sol`; `whenNotPaused` / `onlyOperator` modifiers and all state in `src/vault/DCAVaultStorage.sol`; token whitelist setters in `src/vault/DCAVaultRoles.sol`.
-- Storage: `paused`, `allowedToken`, `_allowedTokenList` (internal mirror for views, no public getter).
+- Storage: `paused`, `stableToken`, `allowedToken`, `_allowedTokenList` (internal mirror for views, no public getter), `_expectingNative` (internal receive() window flag).
+- Constant: `NATIVE = address(0)` (native ETH currency id, as in Uniswap V4).
 - Events: `Paused(by)`, `Unpaused()`, `TokenAllowed(token, allowed)`, `Withdrawn(token, to, amount)`.
-- Errors: `IsPaused`, `NotPaused`, `TokenNotAllowed`, `CannotRemoveUsdc`, `UsdcNotAllowed`, `WithdrawAddressNotAllowed`, `BadArrayLength`, `InsufficientBalance`.
+- Errors: `IsPaused`, `NotPaused`, `TokenNotAllowed`, `StableNotTradable`, `PairNotAllowed`, `UnexpectedNative`, `NativeTransferFailed`, `WithdrawAddressNotAllowed`, `BadArrayLength`, `InsufficientBalance`.
 - `ReentrancyGuard` on every state-changing function that touches an external contract.
 
 ## 1. Pause / Unpause
@@ -23,26 +24,33 @@ Sub-logics:
 - While paused: every operator function reverts `IsPaused`. `depositAndSupply` and all proposals (incl. `WithdrawBatch`) still work.
 - Why: pausing cannot lose money, so one signer can react instantly to a compromised operator.
 
-## 2. Token whitelist & anti-junk-token
-- Constructor `_tokens[]` must include `usdc` (`UsdcNotAllowed` otherwise); duplicates revert.
-- `AddToken` / `RemoveToken` proposals; USDC can never be removed.
-- Swaps check both tokens, and one side must be USDC (no token ↔ token); `WithdrawBatch` checks every token.
-- Junk tokens transferred in are ignored: no loop over held tokens, no `balanceOf` / call on any non-whitelisted address, no rescue function.
-- `getAllowedTokens()` and `getBalances()` → `(usdcIdle, usdcInMorpho, tokens[], balances[])` read only whitelisted tokens.
+## 2. Stable / tradable tokens & anti-junk-token
+Two separate lists (owner decision 2026-10-08):
+- **`stableToken`**: exactly one address (USDC). It is the only token that can be deposited, the only one supplied to Morpho, and one side of every swap. Changed only via `ChangeStableToken`, which sweeps the old stable out first ([morpho-integration §5](morpho-integration.md#5-changestabletoken)).
+- **`allowedToken`**: the tradable tokens (WETH, cbBTC, …), held idle. **Never contains the stable** (`StableNotTradable` in the constructor, `AddToken` and `ChangeStableToken`). It may contain `address(0)` = **native ETH**, which only Uniswap V4 can trade ([swap-v4 §1](swap-v4.md#1-swapexactinputv4)).
+
+Rules:
+- Constructor `_tokens[]` = tradable tokens only (must not contain the stable); duplicates revert. `address(0)` is accepted (native ETH).
+- `AddToken` / `RemoveToken` proposals manage the tradable list. Any tradable token, including native ETH, can be removed. The stable is not in the list, so `RemoveToken(stable)` fails with `NotFound`.
+- "Is this the stable?" is always an address compare against `stableToken`, never a lookup in `allowedToken`.
+- Swaps: one side must be `stableToken` (`PairNotAllowed` otherwise, so no token ↔ token), and the other side must be in `allowedToken` (`TokenNotAllowed`). `WithdrawBatch` accepts the stable or a whitelisted token.
+- Junk tokens transferred in are ignored: no loop over held tokens, no `balanceOf` / call on any address other than the stable and whitelisted tokens, no rescue function. A replaced stable becomes junk the same way.
+- `getAllowedTokens()` returns the tradable list. `getBalances()` → `(stableIdle, stableInMorpho, tokens[], balances[])`: the stable is reported separately, and native ETH is read as `address(this).balance`.
+- **Receiving ETH**: there is no `fallback()`. `receive()` only accepts ETH while `swapExactInputV4` is buying native ETH (`_expectingNative` is set right before `UniversalRouter.execute` and cleared right after, inside the `nonReentrant` swap); otherwise it reverts `UnexpectedNative`. Whitelisting `address(0)` does **not** make the vault accept plain ETH transfers.
 
 ## 3. WithdrawBatch
 ### Entry points
 Proposal `WithdrawBatch(address[] tokens, uint256[] amounts, address to)` / `proposeWithdrawBatch`.
 ### Flow (`_withdrawBatch`)
 1. `to` must be in `isWithdrawAddress`; arrays equal length, non-empty.
-2. For each token: must be whitelisted, amount > 0.
-   - **USDC** (`_prepareUsdc`): `max` → redeem all Morpho shares, send whole USDC balance. Otherwise, if idle < amount, withdraw the shortfall from Morpho.
-   - **Other tokens**: `max` → whole balance; else require amount ≤ balance.
-3. `safeTransfer(to, amount)`, emit `Withdrawn`.
+2. For each token: amount > 0, and the token is the stable or whitelisted.
+   - **Stable** (`_prepareStable`): `max` → redeem all Morpho shares, send the whole stable balance. Otherwise, if idle < amount, withdraw the shortfall from Morpho.
+   - **Other tokens**: `max` → whole balance; else require amount ≤ balance. Native ETH (`address(0)`) balance = `address(this).balance`.
+3. `_sendToken`: ERC20 → `safeTransfer(to, amount)`; native ETH → `to.call{value: amount}("")` (empty calldata, `to` is a whitelisted withdraw address; failure → `NativeTransferFailed`). Emit `Withdrawn`.
 ### Security
-Every token that leaves the contract goes to an address in `isWithdrawAddress` (added only by a signer proposal); everything else fails. The only other outflows are protocol interactions whose output comes back to the vault (router swap — router changeable only at threshold, Morpho deposit) and `ChangeMorphoVault`, which sends all USDC to whatever vault a threshold of signers approved — not validated on-chain, so signers must verify it ([morpho-integration §4](morpho-integration.md#4-changemorphovault-migration)).
+Every token that leaves the contract goes to an address in `isWithdrawAddress` (added only by a signer proposal); everything else fails. The only other outflows are protocol interactions whose output comes back to the vault (router swap — router changeable only at threshold, Morpho deposit) and `ChangeMorphoVault`, which sends all stable to whatever vault a threshold of signers approved — not validated on-chain, so signers must verify it ([morpho-integration §4](morpho-integration.md#4-changemorphovault-migration)).
 ### Edge cases
-Any failure reverts the whole batch. Duplicate tokens in one batch are processed in order (second `max` of the same token will revert with `InsufficientBalance`).
+Any failure reverts the whole batch. This includes a native-ETH withdrawal to a contract that cannot receive ETH, so pick an EOA / Safe. Duplicate tokens in one batch are processed in order (second `max` of the same token will revert with `InsufficientBalance`).
 
 ## 4. The §10 invariants and their tests
 All in `test/DCAVault.security.t.sol`:
@@ -58,19 +66,19 @@ All in `test/DCAVault.security.t.sol`:
 | 7 | Expired/executed/cancelled never execute | `test_Invariant7_*` |
 | 8 | Pause blocks operator; unpause by proposal | `test_Invariant8_*` |
 | 9 | No delegatecall/selfdestruct/callcode | `test_Invariant9_NoDelegatecallOrSelfdestruct` (bytecode opcode scan) |
-| 10 | Rejects ETH | `test_Invariant10_RejectsEth` |
-| 11 | Only USDC in; whitelist enforced | `test_Invariant11_*` |
+| 10 | Rejects ETH (except native-ETH V4 buy output) | `test_Invariant10_RejectsEth`, `test_Invariant10_RejectsEthWhenNativeWhitelisted`, `test_Invariant10_RouterCannotPushEthDuringErc20Swap` |
+| 11 | Only the stable in; whitelist enforced | `test_Invariant11_*` |
 | 12 | Junk tokens harmless | `test_Invariant12_JunkTokenDoesNotAffectAnyFlow` |
 | — | Reentrancy | `test_Security_ReentrancyBlocked` |
 | — | One signer cannot cancel others' proposals | `test_Security_SingleSignerCannotCancelOthers` |
-| — | Swap needs a USDC side | `testFuzz_Security_SwapNeedsUsdcSide` |
+| — | Swap needs a stable side | `testFuzz_Security_SwapNeedsUsdcSide` |
 | — | Protocol addresses change only at threshold | `test_Security_ChangeProtocolAddressesNeedThreshold`, `test_Security_ChangeMorphoVaultNeedsThreshold` |
 | — | Old router keeps no allowance after a switch | `test_Security_OldRouterHasNoPowerAfterChange` |
 | — | Every signer function checks the role (incl. `reject`, `cancel`, `pause`) | `test_Invariant1_OperatorCannotUseSignerFunctions`, `test_Revert_Cancel_ProposerNoLongerSigner` |
 
 ## 5. Accepted risks
 Found in the 2026-10-08 security review; the owner chose to keep the spec behavior. Full list: `DCA_VAULT_SPEC.md` §16.
-1. **Operator sandwich.** The contract only checks `amountOutMinimum > 0`. A stolen operator key can move the pool price, then call `withdrawAndSwapV3(all USDC, minOut = 1)` / `swapExactInputV4(…, minOut = 1)` (or sell all WETH / cbBTC) and back-run — tokens never leave directly, but most of the value does. `allowedFee` (and `allowedTickSpacing` for V4) are global, so the operator may pick a thinner pool. Mitigation today: any signer `pause()`s on the first suspicious `Swapped` event; keep few operators; monitor.
+1. **Operator sandwich.** The contract only checks `amountOutMinimum > 0`. A stolen operator key can move the pool price, then call `withdrawAndSwapV3(all stable, minOut = 1)` / `swapExactInputV4(…, minOut = 1)` (or sell all WETH / cbBTC) and back-run — tokens never leave directly, but most of the value does. `allowedFee` (and `allowedTickSpacing` for V4) are global, so the operator may pick a thinner pool. Mitigation today: any signer `pause()`s on the first suspicious `Swapped` event; keep few operators; monitor.
 2. **`ChangeMorphoVault` is all-or-nothing.** A paused / illiquid / broken old vault makes the full `redeem` revert, so the vault cannot be switched; deposits and sell proceeds keep flowing into it. Mitigation: `pause()` to stop sells.
 3. **2 signers ⇒ threshold 1.** One leaked signer key alone can whitelist an address and withdraw everything, add signers, or switch the router. Deploy with ≥ 3 signers.
 4. **Stale `Unpause` proposals** from an earlier pause stay approvable for 7 days. Cancel / reject leftovers.

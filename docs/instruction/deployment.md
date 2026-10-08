@@ -11,16 +11,17 @@ Sub-logics:
 5. Source layout
 
 ## 1. Constructor
-`DCAVault(usdc, uniV3Router, permit2, universalRouter, morphoVault, signers[], operators[], withdrawAddresses[], tokens[], fees[], tickSpacings[])`
-Validates: all protocol addresses non-zero (`morphoVault` is **not** checked further on-chain — the deploy script pre-flights `asset() == usdc`); signers ≥ 2, non-zero, unique; operators non-zero, unique, not signers; withdraw addresses non-zero, unique; tokens non-zero, unique and include `usdc`; fees > 0, unique; tick spacings in `1..32767`, unique (used by V4 swaps).
+`DCAVault(stableToken, uniV3Router, permit2, universalRouter, morphoVault, signers[], operators[], withdrawAddresses[], tokens[], fees[], tickSpacings[])`
+Validates: stable and all protocol addresses non-zero (`morphoVault` is **not** checked further on-chain — the deploy script pre-flights `asset() == stableToken`); signers ≥ 2, non-zero, unique; operators non-zero, unique, not signers; withdraw addresses non-zero, unique; `tokens[]` = **tradable tokens only**: unique, must **not** contain the stable (`StableNotTradable`), may contain `address(0)` (native ETH, V4 only); fees > 0, unique; tick spacings in `1..32767`, unique (used by V4 swaps).
 No protocol address is hardcoded in the contract.
 
 ## 2. Deploy script
 `script/Deploy.s.sol` reads everything from env (template: `.env.example`):
-`USDC, WETH, CBBTC, UNI_V3_ROUTER, PERMIT2, UNIVERSAL_ROUTER, MORPHO_VAULT, SIGNERS, OPERATORS, WITHDRAW_ADDRESSES, FEES, TICK_SPACINGS, PRIVATE_KEY_DEPLOYER`.
+`STABLE_TOKEN, TOKENS, UNI_V3_ROUTER, PERMIT2, UNIVERSAL_ROUTER, MORPHO_VAULT, SIGNERS, OPERATORS, WITHDRAW_ADDRESSES, FEES, TICK_SPACINGS, PRIVATE_KEY_DEPLOYER`.
+`STABLE_TOKEN` = USDC. `TOKENS` = tradable tokens (default `WETH,cbBTC`); append `0x0000000000000000000000000000000000000000` to also whitelist native ETH.
 `TICK_SPACINGS` is required (default `10,60`, matching fee `500` → 10 and `3000` → 60 on the Base V4 pools).
 Lists are comma-separated without spaces. `OPERATORS` may be empty; `WITHDRAW_ADDRESSES` must not be.
-Pre-flight: requires chainId 8453, code at every address, Morpho asset == USDC; prints the full config.
+Pre-flight: requires chainId 8453, code at every address (except `address(0)` in `TOKENS`), `STABLE_TOKEN` not in `TOKENS`, Morpho asset == `STABLE_TOKEN`; prints the full config.
 ```bash
 cp .env.example .env   # fill in, never commit
 source .env
@@ -44,7 +45,7 @@ forge script script/Deploy.s.sol --rpc-url $BASE_RPC_URL --broadcast --verify
 The checks above were done via RPC; still cross-check on basescan.org before mainnet broadcast.
 
 ## 4. Post-deploy checklist
-Spec §13: verify on basescan → check `getSigners()`, operators, withdraw addresses, tokens, fees, `morphoVault` → fund operator with ~0.01–0.02 ETH → small `depositAndSupply` → small buy (e.g. 5 USDC → WETH) → `pause()` + `Unpause` proposal → small `WithdrawBatch` → revoke the old EOA unlimited approvals → start the bot.
+Spec §13: verify on basescan → check `getSigners()`, operators, withdraw addresses, `stableToken`, tradable tokens (`getAllowedTokens()`), fees, `morphoVault` → fund operator with ~0.01–0.02 ETH → small `depositAndSupply` → small buy (e.g. 5 USDC → WETH) → `pause()` + `Unpause` proposal → small `WithdrawBatch` → revoke the old EOA unlimited approvals → start the bot.
 
 **A third-party audit is required before significant funds.** Start with small amounts.
 
@@ -55,12 +56,12 @@ Spec §13: verify on basescan → check `getSigners()`, operators, withdraw addr
 | File | Contents |
 |---|---|
 | `src/DCAVault.sol` | Final contract: constructor seeds signers / operators / withdraw addresses / tokens / fees / tick spacings. |
-| `src/vault/DCAVaultStorage.sol` | Types, constants, immutable `usdc`, **all** state (incl. `morphoVault`, `uniV3Router`, `permit2`, `universalRouter`, changeable only by proposal), events, errors, modifiers; base constructor sets protocol addresses (non-zero check only). |
+| `src/vault/DCAVaultStorage.sol` | Types, constants (incl. `NATIVE = address(0)`), **all** state (incl. `stableToken`, `morphoVault`, `uniV3Router`, `permit2`, `universalRouter`, changeable only by proposal), events, errors, modifiers; base constructor sets stable + protocol addresses (non-zero check only). |
 | `src/vault/DCAVaultRoles.sol` | Role / whitelist setters, `getSigners`, `getAllowedTokens`, `getThreshold`. |
-| `src/vault/DCAVaultMorpho.sol` | Morpho deposit / withdraw / migration, `totalUsdc`, `getBalances`. |
+| `src/vault/DCAVaultMorpho.sol` | Morpho deposit / withdraw / migration, `ChangeStableToken`, `totalStable`, `getBalances`, native-aware `_balanceOf` / `_sendToken`. |
 | `src/vault/DCAVaultSwap.sol` | Base of the swap modules: `_checkSwap` (shared rules) + `_settleSwap` (balance-delta output, `Swapped`, sell → Morpho). |
 | `src/vault/DCAVaultSwapV3.sol` | V3 swaps via SwapRouter02: `swapExactInputV3`, `withdrawAndSwapV3`. |
-| `src/vault/DCAVaultSwapV4.sol` | V4 swap via UniversalRouter + Permit2: `swapExactInputV4`. |
+| `src/vault/DCAVaultSwapV4.sol` | V4 swap via UniversalRouter + Permit2: `swapExactInputV4` (incl. native ETH), guarded `receive()`. |
 | `src/vault/DCAVaultProposals.sol` | `pause`, proposal lifecycle, execution dispatch, `WithdrawBatch`. |
 
 Inheritance: `Storage ← Roles ← Morpho ← {Swap ← {SwapV3, SwapV4}, Proposals} ← DCAVault`.

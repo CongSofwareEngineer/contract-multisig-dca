@@ -2,7 +2,7 @@
 > Last updated: 2026-10-08
 
 ## Overview
-Operator swaps through **Uniswap V4** pools, via the UniversalRouter + Permit2. Same rules as V3 (one side must be USDC, output stays in the vault, a sell to USDC is supplied to Morpho), plus a pool-shape whitelist: `allowedFee` (shared with V3) **and** `allowedTickSpacing`, with `hooks` always `address(0)`.
+Operator swaps through **Uniswap V4** pools, via the UniversalRouter + Permit2. Same rules as V3 (one side must be `stableToken`, output stays in the vault, a sell to the stable is supplied to Morpho), plus a pool-shape whitelist: `allowedFee` (shared with V3) **and** `allowedTickSpacing`, with `hooks` always `address(0)`. Unlike V3, V4 can trade **native ETH** (`address(0)`) once it is whitelisted in `allowedToken`.
 Sub-logics:
 1. `swapExactInputV4`
 2. `allowedTickSpacing` whitelist
@@ -13,34 +13,40 @@ Sub-logics:
 - Storage: `permit2`, `universalRouter` (constructor, non-zero; then only via proposal), `allowedTickSpacing[int24]`.
 - Constants: `SWAP_VERSION_V4 = 4`, `MIN_TICK_SPACING = 1`, `MAX_TICK_SPACING = 32767` (v4-core bounds). Private: `V4_SWAP = 0x10`, `SWAP_EXACT_IN_SINGLE = 0x06`, `SETTLE_ALL = 0x0c`, `TAKE_ALL = 0x0f`.
 - Events: `Swapped(tokenIn, tokenOut, fee, amountIn, amountOut, 4)`, `TickSpacingAllowed(tickSpacing, allowed)`, `Permit2Changed`, `UniversalRouterChanged`.
-- Errors: `TickSpacingNotAllowed`, `InvalidTickSpacing`, `AmountTooLarge`, `ExcessiveInput`, plus the V3 swap errors.
+- Errors: `TickSpacingNotAllowed`, `InvalidTickSpacing`, `AmountTooLarge`, `ExcessiveInput`, `UnexpectedNative`, plus the shared swap errors.
+- `receive()` lives here: it accepts ETH only while `_expectingNative` is set (native-ETH buy in progress).
 - Interfaces: `src/interfaces/IPermit2.sol`, `src/interfaces/IUniversalRouter.sol`, `src/interfaces/IV4Router.sol` (`PoolKey`, `ExactInputSingleParams`; `Currency` / `IHooks` written as `address`, same ABI encoding).
 
 ## 1. swapExactInputV4
 ### Purpose
-Exact-input swap through one hookless V4 pool. Used for buys (USDC → WETH/cbBTC) and sells (→ USDC).
+Exact-input swap through one hookless V4 pool. Used for buys (stable → WETH / cbBTC / native ETH) and sells (→ stable).
 ### Entry points
 `swapExactInputV4(address tokenIn, address tokenOut, uint24 fee, int24 tickSpacing, uint256 amountIn, uint256 amountOutMinimum, uint256 deadline)` — `onlyOperator whenNotPaused nonReentrant`, returns `amountOut`.
 ### Flow
-1. Same checks as V3 (`_checkSwap`): both tokens whitelisted, different, one is USDC, `amountIn > 0`, `amountOutMinimum > 0`, `block.timestamp <= deadline`, `allowedFee[fee]`.
+1. Same checks as V3 (`_checkSwap`): one side is `stableToken`, the other in `allowedToken`, `amountIn > 0`, `amountOutMinimum > 0`, `block.timestamp <= deadline`, `allowedFee[fee]`.
 2. `allowedTickSpacing[tickSpacing]`; `amountIn` and `amountOutMinimum` ≤ `uint128.max` (V4 params are uint128 — never truncated).
-3. Snapshot balances; `amountIn <= balance(tokenIn)`.
+3. Snapshot balances (`_balanceOf`: native ETH → `address(this).balance`); `amountIn <= balance(tokenIn)`.
 4. Build the input (`_buildV4SwapInput`): `PoolKey{currency0, currency1 = sorted(tokenIn, tokenOut), fee, tickSpacing, hooks: address(0)}`, `zeroForOne = tokenIn < tokenOut`; actions `SWAP_EXACT_IN_SINGLE` + `SETTLE_ALL(tokenIn, amountIn)` + `TAKE_ALL(tokenOut, amountOutMinimum)`; `hookData = ""`.
-5. `_executeV4`: `forceApprove(tokenIn → permit2, amountIn)` → `IPermit2.approve(tokenIn, universalRouter, uint160(amountIn), uint48(block.timestamp))` → `UniversalRouter.execute(0x10, [input], deadline)` → `IPermit2.approve(tokenIn, universalRouter, 0, 0)` → `forceApprove(tokenIn → permit2, 0)`.
+5. If `tokenOut == address(0)`: set `_expectingNative = true` (opens `receive()`).
+   `_executeV4`:
+   - ERC20 in: `forceApprove(tokenIn → permit2, amountIn)` → `IPermit2.approve(tokenIn, universalRouter, uint160(amountIn), uint48(block.timestamp))` → `UniversalRouter.execute(0x10, [input], deadline)` → `IPermit2.approve(tokenIn, universalRouter, 0, 0)` → `forceApprove(tokenIn → permit2, 0)`.
+   - Native ETH in: **no approvals**. `UniversalRouter.execute{value: amountIn}(0x10, [input], deadline)`; `SETTLE_ALL` pays the PoolManager from that ETH.
+   Then `_expectingNative = false`. For a native-ETH buy, the PoolManager sends the ETH to the vault during `TAKE_ALL`, and `receive()` accepts it only inside this window.
 6. Verify: tokenIn spent ≤ `amountIn` (`ExcessiveInput`); tokenOut received ≥ `amountOutMinimum` (`InsufficientOutput`), measured by balance delta.
-7. Emit `Swapped(..., 4)`. If `tokenOut == usdc`, the received USDC is supplied to Morpho (`MorphoDeposited`); idle USDC already in the vault is not touched.
+7. Emit `Swapped(..., 4)`. If `tokenOut == stableToken`, the received stable is supplied to Morpho (`MorphoDeposited`); idle stable already in the vault is not touched. Bought tokens / ETH stay idle in the vault.
 
-The bot buys with V4 in two txs: `morphoWithdraw(x)` then `swapExactInputV4(usdc, …, x, …)` (there is no `withdrawAndSwapV4`, it is not in the spec).
+The bot buys with V4 in two txs: `morphoWithdraw(x)` then `swapExactInputV4(stableToken, …, x, …)` (there is no `withdrawAndSwapV4`, it is not in the spec).
 ### Security
 - **No operator calldata** (invariant 9): commands / actions are constants, every param comes from validated arguments.
 - **Output to the vault** (invariant 2): `TAKE_ALL` pays the UniversalRouter's `msg.sender`, i.e. always the vault. No recipient parameter exists.
 - **No standing approvals** (invariant 3): both the ERC20 → Permit2 and the Permit2 → UniversalRouter allowance are exact, reset to 0 in the same call; the Permit2 one also expires this block.
 - **No hooked pools**: `hooks = address(0)` is hardcoded — a hook could run arbitrary code around the swap.
-- Pool choice is bounded by `allowedFee` × `allowedTickSpacing` × USDC pair. Slippage is the bot's job (`amountOutMinimum`), same accepted risk as V3 (security-safety §accepted risks).
+- **Native ETH window** (invariant 10): `receive()` only accepts ETH while a native-ETH buy is in progress. A router pushing ETH during any other swap makes the whole swap revert.
+- Pool choice is bounded by `allowedFee` × `allowedTickSpacing` × stable pair. Slippage is the bot's job (`amountOutMinimum`), same accepted risk as V3 (security-safety §accepted risks).
 ### Edge cases
 - Pool with that (fee, tickSpacing) not initialized / no liquidity → router reverts, whole tx reverts.
 - `deadline` checked by the vault and again by the UniversalRouter.
-- Native-ETH V4 pools (`currency0 = address(0)`) are **not** reachable: `address(0)` can never be in `allowedToken`. Only WETH pools.
+- Native-ETH V4 pools are reachable only after `AddToken(address(0))`. `address(0)` always sorts first, so it is `currency0`, exactly as in V4 native pools. Fork-tested on Base (2026-10-08): ETH/USDC `500/10` hookless, buy + sell.
 - Paused → `IsPaused`.
 - Hookless pools with liquidity on Base (checked 2026-10-08): WETH/USDC `500/10`, `3000/60`; USDC/cbBTC `500/10` (thin: `100/1`, `3000/60`, `10000/200`).
 

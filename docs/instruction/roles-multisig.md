@@ -21,8 +21,8 @@ Sub-logics:
 | Role | Can do |
 |---|---|
 | signer | propose / approve / reject, cancel own proposals (only while still a signer), `pause()` alone |
-| operator | `swapExactInputV3`, `withdrawAndSwapV3`, `morphoDeposit`, `morphoWithdraw` (only while not paused) |
-| anyone | `depositAndSupply` (USDC only), views |
+| operator | `swapExactInputV3`, `withdrawAndSwapV3`, `swapExactInputV4`, `morphoDeposit`, `morphoWithdraw` (only while not paused) |
+| anyone | `depositAndSupply` (`stableToken` only), views |
 
 ## 1. Signers
 ### Purpose
@@ -44,7 +44,7 @@ Cold / hardware wallets of the owner. All config changes and all withdrawals nee
 
 ## 2. Operators
 ### Purpose
-Hot key used by the off-chain bot. Pays its own gas. Can only trade whitelisted tokens and move USDC in/out of Morpho; it can never send tokens anywhere else.
+Hot key used by the off-chain bot. Pays its own gas. Can only trade stable ↔ whitelisted tokens and move the stable in/out of Morpho; it can never send tokens anywhere else.
 ### Entry points
 Constructor `_operators[]` (may be empty); proposals `AddOperator`, `RemoveOperator`.
 ### Flow
