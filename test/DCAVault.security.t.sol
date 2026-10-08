@@ -43,7 +43,9 @@ contract DCAVaultSecurityTest is VaultTestBase {
         } else if (act == 2) {
             try vault.morphoDeposit(amount) {} catch {}
         } else if (act == 3) {
-            try vault.morphoWithdraw(amount) {} catch {}
+            // no public Morpho withdraw exists — the raw call must fail and move nothing
+            (bool ok,) = address(vault).call(abi.encodeWithSignature("morphoWithdraw(uint256)", amount));
+            assertFalse(ok);
         } else {
             try vault.proposeWithdrawBatch(_addrs(a), new uint256[](1), operator) {} catch {}
         }
@@ -153,12 +155,14 @@ contract DCAVaultSecurityTest is VaultTestBase {
         _assertNothingLeaked();
     }
 
+    /// @dev A buy is the only operator path that withdraws from Morpho; the stable lands in the vault, then the router.
     function test_Invariant2_MorphoWithdrawReceiverIsVault() public {
-        uint256 before = usdc.balanceOf(address(vault));
+        uint256 sharesBefore = morpho.balanceOf(address(vault));
         vm.prank(operator);
-        vault.morphoWithdraw(500e6);
-        assertEq(usdc.balanceOf(address(vault)), before + 500e6);
+        vault.swapExactInputV3(address(usdc), address(weth), FEE_LOW, 500e6, 1, block.timestamp);
+        assertEq(morpho.balanceOf(address(vault)), sharesBefore - 500e6);
         assertEq(usdc.balanceOf(operator), 0);
+        assertEq(morpho.balanceOf(operator), 0);
     }
 
     // =========================================================== #3 no allowance survives a tx
@@ -175,7 +179,7 @@ contract DCAVaultSecurityTest is VaultTestBase {
         _assertNoAllowances();
         vault.swapExactInputV4(address(weth), address(usdc), FEE_MED, TS_MED, 1 ether, 1, block.timestamp);
         _assertNoAllowances();
-        vault.morphoWithdraw(10e6);
+        usdc.mint(address(vault), 10e6); // idle stable (direct transfer)
         vault.morphoDeposit(10e6);
         _assertNoAllowances();
         vm.stopPrank();
@@ -341,8 +345,6 @@ contract DCAVaultSecurityTest is VaultTestBase {
         vm.expectRevert(DCAVaultStorage.IsPaused.selector);
         vault.morphoDeposit(1);
         vm.expectRevert(DCAVaultStorage.IsPaused.selector);
-        vault.morphoWithdraw(1);
-        vm.expectRevert(DCAVaultStorage.IsPaused.selector);
         vault.swapExactInputV4(address(usdc), address(weth), 500, 10, 1, 1, block.timestamp);
         vm.expectRevert(DCAVaultStorage.IsPaused.selector);
         vault.swapExactInputV4(address(usdc), address(weth), 500, 10, 1, 1, block.timestamp);
@@ -359,7 +361,7 @@ contract DCAVaultSecurityTest is VaultTestBase {
         vault.approve(id);
         assertFalse(vault.paused());
         vm.prank(operator);
-        vault.morphoWithdraw(1e6);
+        vault.swapExactInputV3(address(usdc), address(weth), FEE_LOW, 1e6, 1, block.timestamp);
     }
 
     // =========================================================== #9 no delegatecall / selfdestruct
@@ -471,7 +473,7 @@ contract DCAVaultSecurityTest is VaultTestBase {
         vault.swapExactInputV3(address(usdc), address(weth), FEE_LOW, 100e6, 1, block.timestamp);
         vault.swapExactInputV3(address(weth), address(usdc), FEE_LOW, 1 ether, 1, block.timestamp);
         vault.swapExactInputV3(address(cbbtc), address(usdc), FEE_MED, 1e7, 1, block.timestamp);
-        vault.morphoWithdraw(5e6);
+        usdc.mint(address(vault), 5e6); // idle stable (direct transfer)
         vault.morphoDeposit(5e6);
         // a junk tokenIn is rejected by the whitelist, never by the junk token's own revert
         vm.expectRevert(DCAVaultStorage.TokenNotAllowed.selector);

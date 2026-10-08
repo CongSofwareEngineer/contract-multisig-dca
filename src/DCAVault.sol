@@ -22,7 +22,7 @@ import {DCAVaultProposals} from "./vault/DCAVaultProposals.sol";
 ///      Code is split into modules (all compiled into this one immutable contract — no proxy):
 ///      - DCAVaultStorage   : types, constants, immutables, state, events, errors, modifiers
 ///      - DCAVaultRoles     : signers / operators / withdraw addresses / token & pool whitelists
-///      - DCAVaultMorpho    : depositAndSupply, morphoDeposit / morphoWithdraw, vault migration
+///      - DCAVaultMorpho    : depositAndSupply, morphoDeposit, vault migration (no public Morpho withdraw)
 ///      - DCAVaultSwap      : checks + settlement shared by V3 and V4 swaps
 ///      - DCAVaultSwapV3    : swapExactInputV3 (SwapRouter02; a buy pulls from Morpho)
 ///      - DCAVaultSwapV4    : swapExactInputV4 (UniversalRouter + Permit2)

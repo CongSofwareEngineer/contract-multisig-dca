@@ -50,7 +50,7 @@ Each handler re-validates against live state at execute time (state may have cha
 
 | ProposalType | `data` (abi.encode) | Constraints | Handler doc |
 |---|---|---|---|
-| `WithdrawBatch` | `(address[] tokens, uint256[] amounts, address to)` | `to` whitelisted; tokens whitelisted; equal non-empty arrays; amounts > 0; `type(uint256).max` = all | [security-safety §3](security-safety.md#3-withdrawbatch) |
+| `WithdrawBatch` | `(address[] tokens, uint256[] amounts, address to)` | `to` whitelisted; tokens whitelisted; equal non-empty arrays; amounts > 0; `type(uint256).max` = all (skipped if empty) | [security-safety §3](security-safety.md#3-withdrawbatch) |
 | `AddWithdrawAddress` | `address` | ≠ 0, not already | [roles-multisig §3](roles-multisig.md#3-withdraw-addresses) |
 | `RemoveWithdrawAddress` | `address` | must exist | same |
 | `AddSigner` | `address` | ≠ 0, not signer, not operator | [roles-multisig §1](roles-multisig.md#1-signers) |

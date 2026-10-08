@@ -6,7 +6,7 @@ import {ERC4626} from "@openzeppelin/contracts/token/ERC20/extensions/ERC4626.so
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
 interface IVaultOperatorFns {
-    function morphoWithdraw(uint256 amount) external;
+    function morphoDeposit(uint256 amount) external;
 }
 
 /// @dev ERC-4626 that tries to re-enter the DCAVault during `deposit`. Must be blocked by nonReentrant.
@@ -24,7 +24,7 @@ contract ReentrantMorphoVault is ERC4626 {
     function deposit(uint256 assets, address receiver) public override returns (uint256) {
         if (armed) {
             armed = false;
-            IVaultOperatorFns(target).morphoWithdraw(1);
+            IVaultOperatorFns(target).morphoDeposit(1);
         }
         return super.deposit(assets, receiver);
     }

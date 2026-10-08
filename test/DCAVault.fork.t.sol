@@ -168,14 +168,12 @@ contract DCAVaultForkTest is Test {
 
     // ------------------------------------------------------------------ morpho ops
 
-    function test_Fork_MorphoWithdrawThenDeposit() public {
-        vm.prank(operator);
-        vault.morphoWithdraw(500e6);
-        assertEq(IERC20(USDC).balanceOf(address(vault)), 500e6);
+    function test_Fork_MorphoDepositIdleStable() public {
+        deal(USDC, address(vault), 500e6); // idle stable (direct transfer)
         vm.prank(operator);
         vault.morphoDeposit(500e6);
         assertEq(IERC20(USDC).balanceOf(address(vault)), 0);
-        assertApproxEqAbs(vault.totalStable(), 10_000e6, 3);
+        assertApproxEqAbs(vault.totalStable(), 10_500e6, 3);
         _assertNoAllowances(STEAKHOUSE_USDC);
     }
 

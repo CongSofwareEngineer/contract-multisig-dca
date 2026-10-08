@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
+import {Vm} from "forge-std/Vm.sol";
 import {VaultTestBase} from "./helpers/VaultTestBase.sol";
 import {DCAVault} from "../src/DCAVault.sol";
 import {DCAVaultStorage} from "../src/vault/DCAVaultStorage.sol";
@@ -207,7 +208,7 @@ contract DCAVaultTest is VaultTestBase {
         vault.depositAndSupply(0);
     }
 
-    // =================================================================== morphoDeposit / morphoWithdraw
+    // =================================================================== morphoDeposit
 
     function test_MorphoDeposit_IdleUsdc() public {
         usdc.mint(address(vault), 50e6); // direct transfer, sits idle
@@ -231,19 +232,17 @@ contract DCAVaultTest is VaultTestBase {
         vault.morphoDeposit(0);
     }
 
-    function test_MorphoWithdraw_ExactAmountToVault() public {
+    /// @dev There is no public Morpho withdraw: stable leaves Morpho only via a buy swap, WithdrawBatch or migration.
+    function test_Revert_MorphoWithdraw_NobodyCanCall() public {
         _deposit(100e6);
-        vm.prank(operator);
-        vault.morphoWithdraw(30e6);
-        assertEq(usdc.balanceOf(address(vault)), 30e6);
-        assertEq(vault.totalStable(), 100e6);
-    }
-
-    function test_Revert_MorphoWithdraw_NotOperator() public {
-        _deposit(100e6);
-        vm.prank(signer1);
-        vm.expectRevert(DCAVaultStorage.NotOperator.selector);
-        vault.morphoWithdraw(1e6);
+        address[3] memory callers = [operator, signer1, user];
+        for (uint256 i; i < callers.length; i++) {
+            vm.prank(callers[i]);
+            (bool ok,) = address(vault).call(abi.encodeWithSignature("morphoWithdraw(uint256)", 1e6));
+            assertFalse(ok);
+        }
+        assertEq(usdc.balanceOf(address(vault)), 0);
+        assertEq(morpho.balanceOf(address(vault)), 100e6);
     }
 
     // =================================================================== swapExactInputV3
@@ -1261,6 +1260,89 @@ contract DCAVaultTest is VaultTestBase {
         assertEq(usdc.balanceOf(treasury), 1010e6);
         assertEq(morpho.balanceOf(address(vault)), 0);
         assertEq(vault.totalStable(), 0);
+    }
+
+    /// @dev Full sweep: `max` on every token; empty ones (cbBTC here) are skipped instead of reverting.
+    function test_WithdrawBatch_MaxSweepSkipsEmptyTokens() public {
+        _deposit(1000e6);
+        weth.mint(address(vault), 2 ether);
+        uint256[] memory amounts = new uint256[](3);
+        amounts[0] = type(uint256).max;
+        amounts[1] = type(uint256).max;
+        amounts[2] = type(uint256).max;
+
+        vm.recordLogs();
+        _passProposal(
+            DCAVaultStorage.ProposalType.WithdrawBatch,
+            abi.encode(_addrs(address(usdc), address(weth), address(cbbtc)), amounts, treasury)
+        );
+
+        assertEq(usdc.balanceOf(treasury), 1000e6);
+        assertEq(weth.balanceOf(treasury), 2 ether);
+        assertEq(cbbtc.balanceOf(treasury), 0);
+        assertEq(vault.totalStable(), 0);
+        assertEq(weth.balanceOf(address(vault)), 0);
+        _assertNoAllowances();
+
+        // No Withdrawn event for the skipped token.
+        Vm.Log[] memory logs = vm.getRecordedLogs();
+        for (uint256 i; i < logs.length; ++i) {
+            if (logs[i].emitter == address(vault) && logs[i].topics[0] == DCAVaultStorage.Withdrawn.selector) {
+                assertTrue(address(uint160(uint256(logs[i].topics[1]))) != address(cbbtc));
+            }
+        }
+    }
+
+    function test_WithdrawBatch_MaxStableEmptyIsSkipped() public {
+        weth.mint(address(vault), 1 ether);
+        uint256[] memory amounts = new uint256[](2);
+        amounts[0] = type(uint256).max;
+        amounts[1] = type(uint256).max;
+        _passProposal(
+            DCAVaultStorage.ProposalType.WithdrawBatch,
+            abi.encode(_addrs(address(usdc), address(weth)), amounts, treasury)
+        );
+        assertEq(usdc.balanceOf(treasury), 0);
+        assertEq(weth.balanceOf(treasury), 1 ether);
+    }
+
+    /// @dev Balance drained between propose and execute: the sweep still executes (as a no-op).
+    function test_WithdrawBatch_MaxAllEmptyExecutesAsNoop() public {
+        uint256[] memory amounts = new uint256[](2);
+        amounts[0] = type(uint256).max;
+        amounts[1] = type(uint256).max;
+        uint256 id = _passProposal(
+            DCAVaultStorage.ProposalType.WithdrawBatch,
+            abi.encode(_addrs(address(weth), address(cbbtc)), amounts, treasury)
+        );
+        (,,,, bool executed,) = vault.proposals(id);
+        assertTrue(executed);
+    }
+
+    /// @dev Duplicate token: second `max` finds nothing left and is skipped.
+    function test_WithdrawBatch_DuplicateMaxSecondSkipped() public {
+        weth.mint(address(vault), 1 ether);
+        uint256[] memory amounts = new uint256[](2);
+        amounts[0] = type(uint256).max;
+        amounts[1] = type(uint256).max;
+        _passProposal(
+            DCAVaultStorage.ProposalType.WithdrawBatch,
+            abi.encode(_addrs(address(weth), address(weth)), amounts, treasury)
+        );
+        assertEq(weth.balanceOf(treasury), 1 ether);
+    }
+
+    /// @dev Only `max` skips: an explicit amount on an empty token still reverts the whole batch.
+    function test_Revert_WithdrawBatch_ExplicitAmountOnEmptyToken() public {
+        weth.mint(address(vault), 1 ether);
+        uint256[] memory amounts = new uint256[](2);
+        amounts[0] = type(uint256).max;
+        amounts[1] = 1e8;
+        vm.prank(signer1);
+        uint256 id = vault.proposeWithdrawBatch(_addrs(address(weth), address(cbbtc)), amounts, treasury);
+        vm.prank(signer2);
+        vm.expectRevert(DCAVaultStorage.InsufficientBalance.selector);
+        vault.approve(id);
     }
 
     function test_Revert_WithdrawBatch_ToNotWhitelisted() public {

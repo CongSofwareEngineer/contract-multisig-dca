@@ -362,8 +362,11 @@ abstract contract DCAVaultProposals is DCAVaultMorpho {
                 if (!allowedToken[token]) revert TokenNotAllowed();
                 uint256 bal = _balanceOf(token);
                 if (amount == type(uint256).max) amount = bal;
-                if (amount == 0 || amount > bal) revert InsufficientBalance();
+                else if (amount > bal) revert InsufficientBalance();
             }
+            // Only reachable via `max` on an empty token: skip it so one empty slot can't block a full sweep
+            // (balances can change between propose and execute).
+            if (amount == 0) continue;
             _sendToken(token, to, amount);
             emit Withdrawn(token, to, amount);
         }

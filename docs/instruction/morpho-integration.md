@@ -6,12 +6,12 @@ The vault has **one stablecoin**, `stableToken` (USDC today), kept separate from
 Sub-logics:
 1. `depositAndSupply` (anyone)
 2. `morphoDeposit` (operator)
-3. `morphoWithdraw` (operator)
+3. No public Morpho withdraw
 4. `ChangeMorphoVault` migration (proposal)
 5. `ChangeStableToken` (proposal)
 
 ## Shared
-- Code: `src/vault/DCAVaultMorpho.sol` (`depositAndSupply`, `morphoDeposit` / `morphoWithdraw`, `_prepareStable`, `_changeMorphoVault`, `_changeStableToken`, `totalStable`, `getBalances`, native-aware helpers `_balanceOf` / `_sendToken`).
+- Code: `src/vault/DCAVaultMorpho.sol` (`depositAndSupply`, `morphoDeposit`, `_prepareStable`, `_changeMorphoVault`, `_changeStableToken`, `totalStable`, `getBalances`, native-aware helpers `_balanceOf` / `_sendToken`).
 - Storage: `stableToken` and `morphoVault` (set in constructor, then mutable only via threshold proposals).
 - "Is this the stable?" is always an address compare against `stableToken`. The stable is never in `allowedToken`, so the two lists cannot overlap.
 - Internal: `_supplyToMorpho(amount)` = `forceApprove(vault, amount)` → `deposit(amount, address(this))` → `forceApprove(vault, 0)`; `_withdrawFromMorpho(amount)` = `withdraw(amount, address(this), address(this))`.
@@ -31,9 +31,13 @@ No token parameter, so only the stable can enter (invariant #11). Allowance to M
 ## 2. morphoDeposit
 `morphoDeposit(uint256 amount)` — `onlyOperator whenNotPaused nonReentrant`. Requires `0 < amount <= idle stable`, then `_supplyToMorpho`, emit `MorphoDeposited`.
 
-## 3. morphoWithdraw
-`morphoWithdraw(uint256 amount)` — `onlyOperator whenNotPaused nonReentrant`. Withdraws exactly `amount` stable; `receiver` and `owner` are hardcoded `address(this)` (invariant #2). Emits `MorphoWithdrawn`. No approval needed (vault burns its own shares).
-Not needed for buys: `swapExactInputV3` / `swapExactInputV4` with `tokenIn == stableToken` withdraw exactly `amountIn` themselves (same internal `_withdrawFromMorpho`, same event) and ignore idle stable — see [swap-v3 §1](swap-v3.md#1-swapexactinputv3).
+## 3. No public Morpho withdraw
+There is **no** `morphoWithdraw` function: nobody (operator, signer, anyone) can pull stable out of Morpho on its own. Stable leaves Morpho only inside a flow that immediately uses it, always with `receiver` / `owner` = `address(this)` (invariant #2), each emitting `MorphoWithdrawn`:
+- **Buy swap** — `swapExactInputV3` / `swapExactInputV4` with `tokenIn == stableToken` withdraw exactly `amountIn` (`_withdrawFromMorpho`) — see [swap-v3 §1](swap-v3.md#1-swapexactinputv3).
+- **WithdrawBatch** — `_prepareStable` pulls only the shortfall (or redeems all for `max`) — see [security-safety.md](security-safety.md).
+- **ChangeMorphoVault / ChangeStableToken** — redeem every share (§4, §5).
+
+Why: buys already pull from Morpho, so a standalone withdraw was redundant and only gave a compromised operator key a way to move the stable out of Morpho (lost yield). Tested by `test_Revert_MorphoWithdraw_NobodyCanCall` (raw call with the old selector fails for operator / signer / outsider).
 
 ## 4. ChangeMorphoVault migration
 ### Purpose

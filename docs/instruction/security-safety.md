@@ -45,12 +45,16 @@ Proposal `WithdrawBatch(address[] tokens, uint256[] amounts, address to)` / `pro
 1. `to` must be in `isWithdrawAddress`; arrays equal length, non-empty.
 2. For each token: amount > 0, and the token is the stable or whitelisted.
    - **Stable** (`_prepareStable`): `max` → redeem all Morpho shares, send the whole stable balance. Otherwise, if idle < amount, withdraw the shortfall from Morpho.
-   - **Other tokens**: `max` → whole balance; else require amount ≤ balance. Native ETH (`address(0)`) balance = `address(this).balance`.
+   - **Other tokens**: `max` → whole balance; else require amount ≤ balance (`InsufficientBalance`). Native ETH (`address(0)`) balance = `address(this).balance`.
+   - **`max` resolving to 0** (token empty at execute time): the token is skipped — no transfer, no `Withdrawn` event. An explicit amount is never skipped.
 3. `_sendToken`: ERC20 → `safeTransfer(to, amount)`; native ETH → `to.call{value: amount}("")` (empty calldata, `to` is a whitelisted withdraw address; failure → `NativeTransferFailed`). Emit `Withdrawn`.
 ### Security
 Every token that leaves the contract goes to an address in `isWithdrawAddress` (added only by a signer proposal); everything else fails. The only other outflows are protocol interactions whose output comes back to the vault (router swap — router changeable only at threshold, Morpho deposit) and `ChangeMorphoVault`, which sends all stable to whatever vault a threshold of signers approved — not validated on-chain, so signers must verify it ([morpho-integration §4](morpho-integration.md#4-changemorphovault-migration)).
 ### Edge cases
-Any failure reverts the whole batch. This includes a native-ETH withdrawal to a contract that cannot receive ETH, so pick an EOA / Safe. Duplicate tokens in one batch are processed in order (second `max` of the same token will revert with `InsufficientBalance`).
+Any failure reverts the whole batch. This includes a native-ETH withdrawal to a contract that cannot receive ETH, so pick an EOA / Safe. Duplicate tokens in one batch are processed in order (a second `max` of the same token finds 0 and is skipped). A batch where every `max` token is empty still executes, as a no-op.
+
+### Recover everything to one address
+One proposal, no extra function: `proposeWithdrawBatch([stableToken, ...getAllowedTokens()], [max, max, ...], to)` with `to` in `isWithdrawAddress`. On execute it redeems all Morpho shares, then sends every non-empty token to `to`; empty ones are skipped, so balance changes between propose and execute cannot block it. Optionally `pause()` first so the operator stops swapping meanwhile.
 
 ## 4. The §10 invariants and their tests
 All in `test/DCAVault.security.t.sol`:

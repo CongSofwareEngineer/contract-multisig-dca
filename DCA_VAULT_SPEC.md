@@ -142,9 +142,10 @@ Thay thế cho mô hình EOA hiện tại (approve unlimited cho Uniswap V3 Rout
 - Chỉ stable. Đưa stable idle trong contract lên Morpho.
 - `amount <= IERC20(stableToken).balanceOf(address(this))`
 
-#### `morphoWithdraw(uint256 amount)`
-- Chỉ stable. Rút **đúng `amount`** từ Morpho về contract.
-- `receiver` và `owner` luôn là `address(this)`.
+#### ~~`morphoWithdraw(uint256 amount)`~~ — đã xóa (2026-10-08, owner request)
+- **Không ai** gọi được (operator, signer, anyone): không còn hàm rút Morpho public.
+- Stable chỉ rời Morpho qua: lệnh mua `swapExactInputV3/V4` (rút đúng `amountIn`), `WithdrawBatch` (tự rút phần thiếu), `ChangeMorphoVault` / `ChangeStableToken` (redeem toàn bộ). Tất cả đều có `receiver` / `owner` = `address(this)`.
+- Lý do: lệnh mua đã tự rút từ Morpho → hàm này thừa; giữ nó chỉ cho operator bị hack cách kéo stable ra khỏi Morpho (mất yield).
 
 #### `swapExactInputV4(address tokenIn, address tokenOut, uint24 fee, int24 tickSpacing, uint256 amountIn, uint256 amountOutMinimum, uint256 deadline)` (implemented 2026-10-08, owner request)
 - Option bổ sung cho V3, cùng quy tắc: **một bên là `stableToken`**, bên kia trong `allowedToken`, `amountIn > 0`, `amountOutMinimum > 0`, `block.timestamp <= deadline`, **`tickSpacing >= 1`** và pool `(token, fee, tickSpacing)` nằm trong `allowedPool` (`PoolNotAllowed`; dùng chung whitelist với V3, xem mục 7). `amountIn` / `amountOutMinimum` ≤ `uint128.max` (không truncate).
@@ -191,7 +192,7 @@ Thay thế cho mô hình EOA hiện tại (approve unlimited cho Uniswap V3 Rout
 
 | ProposalType | data | Ràng buộc |
 |---|---|---|
-| `WithdrawBatch` | `(address[] tokens, uint256[] amounts, address to)` | `to` phải nằm trong `isWithdrawAddress`. Mỗi token phải là `stableToken` hoặc nằm trong `allowedToken`. Mảng cùng độ dài, không rỗng. `amount = type(uint256).max` nghĩa là rút hết token đó. Nếu token là stable và số dư contract không đủ → tự rút phần thiếu từ Morpho (rút hết = `redeem` toàn bộ shares). Token `address(0)` = ETH native, gửi bằng `call{value}("")` (calldata rỗng) tới `to`; fail → `NativeTransferFailed`. |
+| `WithdrawBatch` | `(address[] tokens, uint256[] amounts, address to)` | `to` phải nằm trong `isWithdrawAddress`. Mỗi token phải là `stableToken` hoặc nằm trong `allowedToken`. Mảng cùng độ dài, không rỗng. `amount = type(uint256).max` nghĩa là rút hết token đó; nếu lúc execute token đó số dư = 0 thì **bỏ qua** (không revert, không emit) — để một proposal "rút hết" liệt kê stable + toàn bộ `allowedToken` không bị một token rỗng làm hỏng cả batch. Amount cụ thể mà không đủ số dư vẫn revert `InsufficientBalance`. Nếu token là stable và số dư contract không đủ → tự rút phần thiếu từ Morpho (rút hết = `redeem` toàn bộ shares). Token `address(0)` = ETH native, gửi bằng `call{value}("")` (calldata rỗng) tới `to`; fail → `NativeTransferFailed`. |
 | `AddWithdrawAddress` | `address` | khác `address(0)` |
 | `RemoveWithdrawAddress` | `address` | — |
 | `AddSigner` | `address` | không phải operator, chưa là signer |
@@ -338,7 +339,7 @@ dca-vault/
 │   ├── vault/
 │   │   ├── DCAVaultStorage.sol  # types, constants, immutables, state, events, errors, modifiers
 │   │   ├── DCAVaultRoles.sol    # signers / operators / withdraw addresses / token, fee & tick-spacing whitelists
-│   │   ├── DCAVaultMorpho.sol   # depositAndSupply, morphoDeposit/Withdraw, ChangeMorphoVault / ChangeStableToken
+│   │   ├── DCAVaultMorpho.sol   # depositAndSupply, morphoDeposit, ChangeMorphoVault / ChangeStableToken
 │   │   ├── DCAVaultSwap.sol     # shared swap checks + settlement (base of V3 / V4)
 │   │   ├── DCAVaultSwapV3.sol   # swapExactInputV3 (mua = rút Morpho + swap)
 │   │   ├── DCAVaultSwapV4.sol   # swapExactInputV4 (UniversalRouter + Permit2)
@@ -365,7 +366,7 @@ Chạy test fork: `forge test --fork-url $BASE_RPC_URL -vvv`
 **Phase 1 (làm trước):**
 1. Setup Foundry + OpenZeppelin
 2. Roles + proposal system + threshold
-3. `depositAndSupply`, `morphoDeposit`, `morphoWithdraw`
+3. `depositAndSupply`, `morphoDeposit` (`morphoWithdraw` đã xóa 2026-10-08)
 4. `swapExactInputV3` (mua: tự rút Morpho; bán: auto-deposit USDC lên Morpho)
 5. `WithdrawBatch`, `ChangeMorphoVault` (có migrate)
 6. Whitelist pool (`allowedPool`), `pause()` (1 signer) + proposal `Unpause`
@@ -409,7 +410,7 @@ Các quyết định chi tiết khi code, không đổi hành vi chính của sp
 
 - **Proposal id bắt đầu từ 1** (id 0 luôn là "không tồn tại").
 - **Stable tách khỏi `tokens[]`** (chốt 2026-10-08): `tokens[]` chỉ là token mua bán, chứa stable → revert `StableNotTradable`; trùng token/fee → revert.
-- **`WithdrawBatch`: amount = 0 bị từ chối.** Token trùng trong cùng batch được xử lý tuần tự.
+- **`WithdrawBatch`: amount = 0 bị từ chối.** Token trùng trong cùng batch được xử lý tuần tự. `max` trên token số dư 0 được bỏ qua (thu hồi toàn bộ tài sản = 1 proposal với stable + mọi `allowedToken`, tất cả `max`).
 - **Swap đo output bằng balance trước/sau** (không tin giá trị trả về của router) và revert `InsufficientOutput` nếu < `amountOutMinimum`. `sqrtPriceLimitX96 = 0`.
 - **Bán ra stable chỉ deposit đúng số stable nhận được**, stable idle có sẵn không bị đụng.
 - **`ChangeMorphoVault` deposit toàn bộ stable balance** (phần redeem + stable idle) vào vault mới.

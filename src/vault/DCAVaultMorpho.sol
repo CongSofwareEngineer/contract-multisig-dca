@@ -40,14 +40,6 @@ abstract contract DCAVaultMorpho is DCAVaultRoles {
         emit MorphoDeposited(amount, shares);
     }
 
-    /// @notice Withdraws exactly `amount` stable from Morpho back into the vault.
-    /// @param amount stable amount to withdraw
-    function morphoWithdraw(uint256 amount) external onlyOperator whenNotPaused nonReentrant {
-        if (amount == 0) revert ZeroAmount();
-        uint256 shares = _withdrawFromMorpho(amount);
-        emit MorphoWithdrawn(amount, shares);
-    }
-
     // ------------------------------------------------------------------
     // Views
     // ------------------------------------------------------------------
@@ -94,7 +86,7 @@ abstract contract DCAVaultMorpho is DCAVaultRoles {
     }
 
     /// @dev Makes sure `amount` stable is idle in the vault, pulling the shortfall from Morpho.
-    ///      `type(uint256).max` redeems every share and returns the whole stable balance.
+    ///      `type(uint256).max` redeems every share and returns the whole stable balance (may be 0).
     function _prepareStable(uint256 amount) internal returns (uint256) {
         IERC4626 vault = IERC4626(morphoVault);
         if (amount == type(uint256).max) {
@@ -103,9 +95,7 @@ abstract contract DCAVaultMorpho is DCAVaultRoles {
                 uint256 assets = vault.redeem(shares, address(this), address(this));
                 emit MorphoWithdrawn(assets, shares);
             }
-            amount = IERC20(stableToken).balanceOf(address(this));
-            if (amount == 0) revert InsufficientBalance();
-            return amount;
+            return IERC20(stableToken).balanceOf(address(this));
         }
         uint256 idle = IERC20(stableToken).balanceOf(address(this));
         if (idle < amount) {

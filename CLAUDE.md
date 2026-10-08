@@ -55,7 +55,7 @@ QuoterV2, signing with the operator key). It gets its own spec.
 │   ├── vault/
 │   │   ├── DCAVaultStorage.sol  # types, constants, immutables, state, events, errors, modifiers
 │   │   ├── DCAVaultRoles.sol    # signers / operators / withdraw addresses / token & fee whitelists
-│   │   ├── DCAVaultMorpho.sol   # depositAndSupply, morphoDeposit/Withdraw, ChangeMorphoVault migration
+│   │   ├── DCAVaultMorpho.sol   # depositAndSupply, morphoDeposit, ChangeMorphoVault migration
 │   │   ├── DCAVaultSwap.sol     # shared swap checks + settlement (base of V3 / V4)
 │   │   ├── DCAVaultSwapV3.sol   # swapExactInputV3 (buy = Morpho withdraw + swap)
 │   │   ├── DCAVaultSwapV4.sol   # swapExactInputV4 (UniversalRouter + Permit2)
@@ -78,7 +78,7 @@ QuoterV2, signing with the operator key). It gets its own spec.
 | Role | Who | Can do |
 |---|---|---|
 | `signer` (≥ 2) | Hardware / cold wallets of the owner | Everything, via proposal + vote. Plus `pause()` alone. |
-| `operator` (≥ 0) | Hot wallet held by the bot service | **Only** swaps + Morpho deposit/withdraw. Pays its own gas. |
+| `operator` (≥ 0) | Hot wallet held by the bot service | **Only** swaps + `morphoDeposit`. No Morpho withdraw (a buy pulls from Morpho itself). Pays its own gas. |
 | anyone | — | `depositAndSupply` (USDC in) only |
 
 - A single address must **never** be both signer and operator (enforced in constructor
@@ -150,7 +150,7 @@ Also:
   V4 pool. Never split it back into independent fee / tick-spacing lists (the operator could
   combine them into an attacker-created pool). No per-tx or per-day caps, no TWAP check.
   Slippage is the bot's job via `amountOutMinimum` (contract only checks `> 0`).
-- **Contract size is ~784 B under the EIP-170 limit** (24,576 B). Run `forge build --sizes`
+- **Contract size is ~1,029 B under the EIP-170 limit** (24,576 B). Run `forge build --sizes`
   after any change; deploy fails on mainnet if it goes over.
 - **Pool fee tiers in practice:** USDC/WETH → `500`, WETH/cbBTC → `3000`;
   verify USDC/cbBTC liquidity on a fork before using it.
@@ -200,7 +200,7 @@ Do not stack several unverified steps.
 **Phase 1:**
 1. Foundry setup + OpenZeppelin
 2. Roles + proposal system + `getThreshold()`
-3. `depositAndSupply`, `morphoDeposit`, `morphoWithdraw`
+3. `depositAndSupply`, `morphoDeposit` (`morphoWithdraw` removed 2026-10-08)
 4. `swapExactInputV3` (buy pulls exact USDC from Morpho; sell auto-deposits USDC to Morpho)
 5. `WithdrawBatch`, `ChangeMorphoVault` (with migration)
 6. Pool whitelist (`allowedPool`), `pause()` (single signer) + `Unpause` proposal

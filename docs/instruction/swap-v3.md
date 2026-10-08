@@ -38,7 +38,7 @@ Sub-logics:
 ### Edge cases
 - SwapRouter02 on Base has **no `deadline`** field; the vault checks it.
 - Decimals: USDC 6, WETH 18, cbBTC 8 — amounts are raw token units, nothing assumes 18.
-- Buy: idle stable already in the vault (e.g. after a manual `morphoWithdraw`) is **not** used — the swap always pulls `amountIn` from Morpho. Morpho short of `amountIn` → reverts with Morpho's error (`ERC4626ExceededMaxWithdraw`). Put stray idle stable back with `morphoDeposit`.
+- Buy: idle stable already in the vault (e.g. stable transferred in directly) is **not** used — the swap always pulls `amountIn` from Morpho. Morpho short of `amountIn` → reverts with Morpho's error (`ERC4626ExceededMaxWithdraw`). Put stray idle stable back with `morphoDeposit`.
 - Buy whose swap fails (slippage, bad pool, deadline): the whole tx reverts, the stable stays in Morpho. Any failed check reverts before Morpho is touched.
 
 ## 3. Pool whitelist (`allowedPool`) — shared with V4

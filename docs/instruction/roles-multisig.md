@@ -21,7 +21,7 @@ Sub-logics:
 | Role | Can do |
 |---|---|
 | signer | propose / approve / reject, cancel own proposals (only while still a signer), `pause()` alone |
-| operator | `swapExactInputV3`, `swapExactInputV4` (a buy pulls the stable from Morpho), `morphoDeposit`, `morphoWithdraw` (only while not paused) |
+| operator | `swapExactInputV3`, `swapExactInputV4` (a buy pulls the stable from Morpho), `morphoDeposit` (only while not paused). No Morpho withdraw — see [morpho-integration §3](morpho-integration.md#3-no-public-morpho-withdraw) |
 | anyone | `depositAndSupply` (`stableToken` only), views |
 
 ## 1. Signers
