@@ -9,13 +9,14 @@ Sub-logics:
 3. WithdrawBatch
 4. The §10 invariants and their tests
 5. Accepted risks
+6. EIP-7702 delegated callers blocked
 
 ## Shared
 - Code: `pause()` + `Unpause` in `src/vault/DCAVaultProposals.sol`; `whenNotPaused` / `onlyOperator` modifiers and all state in `src/vault/DCAVaultStorage.sol`; token whitelist setters in `src/vault/DCAVaultRoles.sol`.
 - Storage: `paused`, `stableToken`, `allowedToken`, `_allowedTokenList` (internal mirror for views, no public getter), `_expectingNative` (internal receive() window flag).
 - Constant: `NATIVE = address(0)` (native ETH currency id, as in Uniswap V4).
 - Events: `Paused(by)`, `Unpaused()`, `TokenAllowed(token, allowed)`, `Withdrawn(token, to, amount)`.
-- Errors: `IsPaused`, `NotPaused`, `TokenNotAllowed`, `StableNotTradable`, `PairNotAllowed`, `UnexpectedNative`, `NativeTransferFailed`, `WithdrawAddressNotAllowed`, `BadArrayLength`, `InsufficientBalance`.
+- Errors: `DelegatedCaller`, `IsPaused`, `NotPaused`, `TokenNotAllowed`, `StableNotTradable`, `PairNotAllowed`, `UnexpectedNative`, `NativeTransferFailed`, `WithdrawAddressNotAllowed`, `BadArrayLength`, `InsufficientBalance`.
 - `ReentrancyGuard` on every state-changing function that touches an external contract.
 
 ## 1. Pause / Unpause
@@ -79,15 +80,36 @@ All in `test/DCAVault.security.t.sol`:
 | — | Only listed (token, fee, tickSpacing) pools are reachable | `testFuzz_Security_UnlistedPoolAlwaysRejected`, `test_Fork_Revert_SwapExactInputV4_UnlistedPoolCombo` |
 | — | Protocol addresses change only at threshold | `test_Security_ChangeProtocolAddressesNeedThreshold`, `test_Security_ChangeMorphoVaultNeedsThreshold` |
 | — | Old router keeps no allowance after a switch | `test_Security_OldRouterHasNoPowerAfterChange` |
+| 13 | 7702-delegated callers blocked everywhere | `test_Security_DelegatedOperatorBlocked`, `test_Security_DelegatedSignerBlocked`, `test_Security_DelegatedDepositorBlocked`, `test_Security_ContractCallerNotTreatedAsDelegated` |
 | — | Every signer function checks the role (incl. `reject`, `cancel`, `pause`) | `test_Invariant1_OperatorCannotUseSignerFunctions`, `test_Revert_Cancel_ProposerNoLongerSigner` |
 
 ## 5. Accepted risks
 Found in the 2026-10-08 security review; the owner chose to keep the spec behavior. Full list: `DCA_VAULT_SPEC.md` §16.
-1. **Operator sandwich.** The contract only checks `amountOutMinimum > 0`. A stolen operator key can move the price of a **listed** pool, then call `swapExactInputV3` / `swapExactInputV4(stable → token, all stable, minOut = 1)` (or sell all WETH / cbBTC) and back-run — tokens never leave directly, but much of the value can. This needs real capital against a deep pool. The cheaper variant — routing into an unlisted, attacker-created pool — is blocked by the per-pool whitelist ([swap-v3 §3](swap-v3.md#3-pool-whitelist-allowedpool--shared-with-v4)), provided signers only list pools that exist with liquidity. Mitigation today: any signer `pause()`s on the first suspicious `Swapped` event; keep few operators; monitor.
+1. **Operator sandwich.** The contract only checks `amountOutMinimum > 0`. A stolen operator key can move the price of a **listed** pool, then call `swapExactInputV3` / `swapExactInputV4(stable → token, all stable, minOut = 1)` (or sell all WETH / cbBTC) and back-run — tokens never leave directly, but much of the value can. This needs real capital against a deep pool **only because 7702-delegated callers are blocked** ([§6](#6-eip-7702-delegated-callers-blocked)): without that, flash loan + price push + vault swap + back-run fit in one tx with zero capital, whatever the pool TVL. The cheaper variant — routing into an unlisted, attacker-created pool — is blocked by the per-pool whitelist ([swap-v3 §3](swap-v3.md#3-pool-whitelist-allowedpool--shared-with-v4)), provided signers only list pools that exist with liquidity. Mitigation today: any signer `pause()`s on the first suspicious `Swapped` event; keep few operators; monitor.
 2. **`ChangeMorphoVault` is all-or-nothing.** A paused / illiquid / broken old vault makes the full `redeem` revert, so the vault cannot be switched; deposits and sell proceeds keep flowing into it. Mitigation: `pause()` to stop sells.
 3. **2 signers ⇒ threshold 1.** One leaked signer key alone can whitelist an address and withdraw everything, add signers, or switch the router. Deploy with ≥ 3 signers.
 4. **Stale `Unpause` proposals** from an earlier pause stay approvable for 7 days. Cancel / reject leftovers.
 5. **Protocol addresses are not validated on-chain** (Morpho vault, router, Permit2, UniversalRouter): a threshold proposal can set any address. Same trust as `AddWithdrawAddress` + `WithdrawBatch`.
+
+## 6. EIP-7702 delegated callers blocked
+### Purpose
+With EIP-7702 (live on Base) an EOA can attach contract code to itself. A leaked operator key could then run attack code **as** the operator (`msg.sender == operator`) and do, in one atomic tx: flash loan → push the price of a listed pool → `swapExactInput*(all stable / all token, minOut = 1)` → back-run → repay. No capital is needed and no signer can `pause()` in between. Blocking delegated callers forces every step into its own tx, so a manipulation needs real capital and risks being arbitraged.
+### Entry points
+`_checkNotDelegated()` in `src/vault/DCAVaultStorage.sol`, run by:
+- `onlySigner` — `pause`, `propose`, every `proposeXxx`, `approve`, `reject`, `cancel`
+- `onlyOperator` — `swapExactInputV3`, `swapExactInputV4`, `morphoDeposit`
+- `notDelegated` — `depositAndSupply`
+
+Views and `receive()` are not checked (`receive()`'s sender is the V4 PoolManager).
+### Flow
+1. If `msg.sender` has code, copy its first byte (`extcodecopy`).
+2. First byte `0xef` ⇒ it is the 7702 designator `0xef0100 || implementation` ⇒ revert `DelegatedCaller`.
+3. The check runs before the role check, so a delegated caller gets `DelegatedCaller` even if it is not a signer / operator.
+### Security
+EIP-3541 forbids deploying code that starts with `0xEF`, so a leading `0xef` is always a delegation — ordinary contracts (e.g. a Safe used as signer or depositor) keep working.
+### Edge cases
+- A signer / operator / depositor that delegated (e.g. accepted a wallet "smart account" upgrade) is locked out until it clears the delegation (delegate to `address(0)`); funds are not affected.
+- Well-known test keys are often delegated to sweeper contracts on mainnet: on Base `makeAddr("user")` / `makeAddr("treasury")` carry a 7702 designator, so the fork test uses `makeAddr("dcaForkDepositor")` as depositor. Never use such addresses as real roles.
 
 ## Related
 - [proposal-system.md](proposal-system.md)

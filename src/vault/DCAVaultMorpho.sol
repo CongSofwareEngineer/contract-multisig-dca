@@ -19,8 +19,9 @@ abstract contract DCAVaultMorpho is DCAVaultRoles {
 
     /// @notice Deposits `stableToken` from the caller and supplies it to Morpho in the same tx.
     /// @dev Not gated by `paused`: adding funds is always safe. Only the stable can enter this way.
+    ///      Rejects EIP-7702 delegated callers like every other state-changing entry point.
     /// @param amount stable amount (stable's own decimals); caller must have approved this contract
-    function depositAndSupply(uint256 amount) external nonReentrant {
+    function depositAndSupply(uint256 amount) external notDelegated nonReentrant {
         if (amount == 0) revert ZeroAmount();
         IERC20(stableToken).safeTransferFrom(msg.sender, address(this), amount);
         uint256 shares = _supplyToMorpho(amount);

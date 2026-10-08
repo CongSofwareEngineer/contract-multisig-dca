@@ -207,18 +207,26 @@ abstract contract DCAVaultStorage is ReentrancyGuard {
     error ProposalExpired();
     error AlreadyApproved();
     error AlreadyVoted();
+    error DelegatedCaller();
 
     // ------------------------------------------------------------------
     // Modifiers
     // ------------------------------------------------------------------
 
     modifier onlySigner() {
+        _checkNotDelegated();
         if (!isSigner[msg.sender]) revert NotSigner();
         _;
     }
 
     modifier onlyOperator() {
+        _checkNotDelegated();
         if (!isOperator[msg.sender]) revert NotOperator();
+        _;
+    }
+
+    modifier notDelegated() {
+        _checkNotDelegated();
         _;
     }
 
@@ -254,5 +262,27 @@ abstract contract DCAVaultStorage is ReentrancyGuard {
         permit2 = _permit2;
         universalRouter = _universalRouter;
         morphoVault = _morphoVault;
+    }
+
+    // ------------------------------------------------------------------
+    // Internal
+    // ------------------------------------------------------------------
+
+    /// @dev Reverts if the caller is an EIP-7702 delegated EOA (code = 0xef0100 || impl). With 7702 a leaked
+    ///      operator key can run its own code as `msg.sender == operator` and bundle flash loan -> push the pool
+    ///      price -> vault swap with minOut = 1 -> back-run into ONE tx: no capital needed, no time to `pause()`.
+    ///      Plain EOAs must send each step as its own tx, so a manipulation needs real capital and arb risk.
+    ///      EIP-3541 forbids deployed code starting with 0xEF, so a leading 0xEF byte is always a delegation;
+    ///      ordinary contracts (e.g. a Safe signer) are not affected. Applied to every state-changing entry point.
+    function _checkNotDelegated() internal view {
+        address sender = msg.sender;
+        bool delegated;
+        assembly ("memory-safe") {
+            if extcodesize(sender) {
+                extcodecopy(sender, 0, 0, 1) // first code byte into scratch space
+                delegated := eq(byte(0, mload(0)), 0xef)
+            }
+        }
+        if (delegated) revert DelegatedCaller();
     }
 }

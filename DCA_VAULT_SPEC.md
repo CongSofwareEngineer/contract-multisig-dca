@@ -91,6 +91,7 @@ Thay thế cho mô hình EOA hiện tại (approve unlimited cho Uniswap V3 Rout
 
 - **Bot logic chạy off-chain** (service riêng), quyết định khi nào mua/bán, rồi dùng key của operator để ký tx. On-chain chỉ có role `operator`, không có role `bot` riêng.
 - Một address **không được** vừa là signer vừa là operator.
+- **Chặn ví EIP-7702** (chốt 2026-10-08, owner request): mọi hàm thay đổi state (`depositAndSupply`, mọi hàm operator, mọi hàm signer kể cả `pause`) revert `DelegatedCaller` nếu `msg.sender` là EOA đã gắn code 7702 (code bắt đầu bằng `0xef`). Contract thường (vd Safe) không bị ảnh hưởng. Muốn dùng lại → gỡ delegation (delegate về `address(0)`).
 - **Contract không trả gas.** Người gọi tx (operator) trả gas.
 
 ---
@@ -327,6 +328,7 @@ Unpaused()
 10. Contract **từ chối ETH**, trừ đúng lúc swap V4 mua ETH native (`receive()` chỉ mở khi `_expectingNative`); không có `fallback`. Router đẩy ETH vào lúc swap khác → revert.
 11. Chỉ stable nạp vào được qua `depositAndSupply`. Mọi hàm swap/withdraw revert với token không phải `stableToken` / ngoài `allowedToken`.
 12. Token rác bị `transfer` thẳng vào contract **không làm bất kỳ hàm nào revert hay thay đổi hành vi** (test: transfer token ERC20 giả có `transfer`/`balanceOf` revert vào contract, rồi chạy lại toàn bộ flow chính).
+13. Caller là EOA đã gắn delegation EIP-7702 (code `0xef0100 || impl`) **không gọi được bất kỳ hàm thay đổi state nào** (`DelegatedCaller`). Lý do: với 7702, key operator bị lộ chạy được code riêng với `msg.sender = operator` → gói flash loan → đẩy giá pool → vault swap `minOut = 1` → back-run vào **1 tx**: không cần vốn, signer không kịp `pause()`. (2026-10-08)
 
 ---
 
@@ -420,13 +422,14 @@ Các quyết định chi tiết khi code, không đổi hành vi chính của sp
 - **Signer bị xóa rồi được thêm lại**: vote cũ (`hasApproved` / `hasRejected`) của họ trên proposal còn hạn sẽ được tính lại.
 - **Morpho vault không validate on-chain** (quyết định owner 2026-10-08): contract chỉ supply / withdraw vào địa chỉ `morphoVault` đã set. Địa chỉ này chỉ đổi được qua `ChangeMorphoVault` đủ threshold, nên một signer / operator / người ngoài không đổi được. Signers phải kiểm tra `newVault` (là Morpho vault thật, `asset()` = stable, curator) trước khi approve.
 - **`swapExactInputV4` đã implement** (owner request 2026-10-08, trước đó là stub); `permit2` / `universalRouter` là state, đổi qua proposal. Pool V4 hookless có thanh khoản trên Base (check 2026-10-08): WETH/USDC `500/10`, `3000/60`; USDC/cbBTC `500/10`.
+- **Check 7702** (`_checkNotDelegated`, 2026-10-08): đọc byte đầu tiên của code `msg.sender` (`extcodecopy`); `0xef` = delegation designator (EIP-3541 cấm deploy code bắt đầu bằng `0xef`, nên không nhầm với contract thường). Gắn vào `onlySigner`, `onlyOperator` và modifier `notDelegated` (`depositAndSupply`). `receive()` không check (người gửi ETH là PoolManager).
 - **Propose-time từ chối sớm** `ChangeMorphoVault` / `ChangeUniV3Router` / `ChangePermit2` / `ChangeUniversalRouter` trỏ vào chính địa chỉ hiện tại (execute vẫn check lại).
 
 ## 16. Rủi ro đã chấp nhận (security review 2026-10-08)
 
 Owner đã xem xét và **chọn giữ nguyên** theo spec. Ghi lại để audit / vận hành biết:
 
-1. **Operator bị hack có thể phá giá trị qua sandwich.** Contract chỉ check `amountOutMinimum > 0`. Kẻ có key operator có thể bơm giá một pool **đã whitelist** rồi gọi `swapExactInputV3/V4(USDC → token, toàn bộ USDC, minOut = 1)` (hoặc bán toàn bộ WETH/cbBTC) và back-run → token không "rời" contract trực tiếp nhưng phần lớn giá trị bị lấy. Cần vốn thật để đẩy giá pool sâu. Biến thể rẻ hơn (tự tạo pool rồi route vào) đã bị chặn bởi whitelist theo từng pool (§7, 2026-10-08) — với điều kiện signers chỉ whitelist pool có thật, có thanh khoản. Biện pháp hiện tại: signer `pause()` ngay khi phát hiện, giữ ít operator, monitor `Swapped` event. Phương án nếu cần sau: TWAP check on-chain hoặc cap theo ngày.
+1. **Operator bị hack có thể phá giá trị qua sandwich.** Contract chỉ check `amountOutMinimum > 0`. Kẻ có key operator có thể bơm giá một pool **đã whitelist** rồi gọi `swapExactInputV3/V4(USDC → token, toàn bộ USDC, minOut = 1)` (hoặc bán toàn bộ WETH/cbBTC) và back-run → token không "rời" contract trực tiếp nhưng phần lớn giá trị bị lấy. Cần vốn thật để đẩy giá pool sâu — điều này chỉ đúng vì operator **không gọi được từ ví 7702** (bất biến #13, 2026-10-08): EOA thường không gom flash loan + đẩy giá + swap vault + back-run vào 1 tx được, nên phải dùng vốn thật qua nhiều tx và chịu rủi ro bị arbitrage chen giữa. Không có check này, flash loan (Morpho Blue phí 0) + 7702 cho phép rút gần hết vault trong 1 tx mà không cần vốn, bất kể TVL pool. Biến thể rẻ hơn (tự tạo pool rồi route vào) đã bị chặn bởi whitelist theo từng pool (§7, 2026-10-08) — với điều kiện signers chỉ whitelist pool có thật, có thanh khoản. Biện pháp hiện tại: signer `pause()` ngay khi phát hiện, giữ ít operator, monitor `Swapped` event. Phương án nếu cần sau: TWAP check on-chain hoặc cap theo ngày.
 2. **`ChangeMorphoVault` all-or-nothing.** Nếu vault cũ pause / thiếu thanh khoản / bị hack, `redeem` toàn bộ revert → không đổi vault được; `depositAndSupply` và lệnh bán vẫn đẩy USDC vào vault cũ. Biện pháp: signer `pause()` để chặn bán ra USDC; chờ vault cũ có thanh khoản.
 3. **2 signer → threshold 1.** Một signer bị lộ key là tự mình làm được mọi thứ (AddWithdrawAddress + WithdrawBatch, AddSigner, ChangeUniV3Router sang router độc…). Khuyến nghị deploy ≥ 3 signer (threshold 2).
 4. **Proposal `Unpause` cũ còn hạn** (tạo trong lần pause trước) vẫn approve được trong lần pause sau. Signers nên `cancel` / `reject` các proposal `Unpause` thừa.

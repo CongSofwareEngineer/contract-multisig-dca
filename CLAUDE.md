@@ -118,6 +118,9 @@ These are the §10 invariants of the spec. Every one needs a test in
     behavior: never loop over "all tokens held", never read the balance of a non-
     whitelisted token, never call into a non-whitelisted token address. There is **no
     rescue function** — junk sits there, harmless.
+13. An EIP-7702 delegated EOA (code starts with `0xef`) **cannot call any state-changing
+    function** (`DelegatedCaller`) — it would let a leaked operator key bundle flash loan +
+    pool manipulation + vault swap into one tx. Plain contracts (e.g. a Safe) are unaffected.
 
 Also:
 - There is **no "approve arbitrary token/spender" proposal.** Standing approvals must not
@@ -153,7 +156,7 @@ Also:
   (`_allowedPool[stable][token][fee][tickSpacing]`), so `ChangeStableToken` drops them all.
   No per-tx or per-day caps, no TWAP check.
   Slippage is the bot's job via `amountOutMinimum` (contract only checks `> 0`).
-- **Contract size is ~909 B under the EIP-170 limit** (24,576 B). Run `forge build --sizes`
+- **Contract size is ~634 B under the EIP-170 limit** (24,576 B). Run `forge build --sizes`
   after any change; deploy fails on mainnet if it goes over.
 - **Pool fee tiers in practice:** USDC/WETH → `500`, WETH/cbBTC → `3000`;
   verify USDC/cbBTC liquidity on a fork before using it.

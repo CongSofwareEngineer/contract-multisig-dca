@@ -714,7 +714,79 @@ contract DCAVaultSecurityTest is VaultTestBase {
         vault.swapExactInputV3(a, b, FEE_MED, amount, 1, block.timestamp);
     }
 
+    // =========================================================== EIP-7702 delegated callers
+
+    /// @dev A leaked operator key delegated via EIP-7702 could bundle flash loan -> price push -> vault swap ->
+    ///      back-run into one tx. Every operator entry point must reject it; un-delegating restores access.
+    function test_Security_DelegatedOperatorBlocked() public {
+        _delegate(operator);
+        vm.startPrank(operator);
+        vm.expectRevert(DCAVaultStorage.DelegatedCaller.selector);
+        vault.swapExactInputV3(address(usdc), address(weth), FEE_LOW, 1e6, 1, block.timestamp);
+        vm.expectRevert(DCAVaultStorage.DelegatedCaller.selector);
+        vault.swapExactInputV3(address(weth), address(usdc), FEE_LOW, 1 ether, 1, block.timestamp);
+        vm.expectRevert(DCAVaultStorage.DelegatedCaller.selector);
+        vault.swapExactInputV4(address(usdc), address(weth), FEE_LOW, TS_LOW, 1e6, 1, block.timestamp);
+        vm.expectRevert(DCAVaultStorage.DelegatedCaller.selector);
+        vault.morphoDeposit(1);
+        vm.stopPrank();
+
+        vm.etch(operator, ""); // delegation cleared -> plain EOA again
+        vm.prank(operator);
+        vault.swapExactInputV3(address(usdc), address(weth), FEE_LOW, 1e6, 1, block.timestamp);
+    }
+
+    /// @dev Signers are blocked on every entry point while delegated, pause included.
+    function test_Security_DelegatedSignerBlocked() public {
+        vm.prank(signer2);
+        uint256 id = vault.proposeAddWithdrawAddress(attacker);
+
+        _delegate(signer1);
+        vm.startPrank(signer1);
+        vm.expectRevert(DCAVaultStorage.DelegatedCaller.selector);
+        vault.pause();
+        vm.expectRevert(DCAVaultStorage.DelegatedCaller.selector);
+        vault.propose(DCAVaultStorage.ProposalType.Unpause, "");
+        vm.expectRevert(DCAVaultStorage.DelegatedCaller.selector);
+        vault.proposeWithdrawBatch(_addrs(address(usdc)), new uint256[](1), treasury);
+        vm.expectRevert(DCAVaultStorage.DelegatedCaller.selector);
+        vault.approve(id);
+        vm.expectRevert(DCAVaultStorage.DelegatedCaller.selector);
+        vault.reject(id);
+        vm.stopPrank();
+
+        _delegate(signer2);
+        vm.prank(signer2);
+        vm.expectRevert(DCAVaultStorage.DelegatedCaller.selector);
+        vault.cancel(id);
+        assertFalse(vault.isWithdrawAddress(attacker));
+    }
+
+    function test_Security_DelegatedDepositorBlocked() public {
+        usdc.mint(user, 1e6);
+        vm.prank(user);
+        usdc.approve(address(vault), 1e6);
+        _delegate(user);
+        vm.prank(user);
+        vm.expectRevert(DCAVaultStorage.DelegatedCaller.selector);
+        vault.depositAndSupply(1e6);
+    }
+
+    /// @dev Only the 7702 designator (leading 0xEF byte) is rejected — an ordinary contract signer (e.g. a Safe)
+    ///      keeps working.
+    function test_Security_ContractCallerNotTreatedAsDelegated() public {
+        vm.etch(signer1, hex"6080604052");
+        vm.prank(signer1);
+        vault.pause();
+        assertTrue(vault.paused());
+    }
+
     // =========================================================== helpers
+
+    /// @dev Gives `account` the EIP-7702 delegation designator (0xef0100 || implementation).
+    function _delegate(address account) internal {
+        vm.etch(account, abi.encodePacked(hex"ef0100", attacker));
+    }
 
     function _assertNothingLeaked() internal view {
         assertEq(usdc.balanceOf(operator) + usdc.balanceOf(attacker), 0, "usdc leaked");

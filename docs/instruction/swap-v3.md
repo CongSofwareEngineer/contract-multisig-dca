@@ -33,7 +33,7 @@ Sub-logics:
 ### Security
 - Invariant #2: `recipient` hardcoded. Invariant #3: approve exact → reset 0.
 - The router's return value is not trusted; output is measured by balance delta (catches a lying router).
-- Slippage is the bot's responsibility (QuoterV2 off-chain); the contract only enforces `amountOutMinimum > 0`. **Accepted risk:** a stolen operator key can sandwich the vault's own swaps (`minOut = 1`) — see [security-safety §5](security-safety.md#5-accepted-risks).
+- Slippage is the bot's responsibility (QuoterV2 off-chain); the contract only enforces `amountOutMinimum > 0`. **Accepted risk:** a stolen operator key can sandwich the vault's own swaps (`minOut = 1`), but only with real capital across several txs because 7702-delegated callers are rejected — see [security-safety §5](security-safety.md#5-accepted-risks).
 - The stable-side rule + the pool whitelist (§3) limit the operator to exactly the pools the signers listed — it cannot route through a pool it created itself.
 ### Edge cases
 - SwapRouter02 on Base has **no `deadline`** field; the vault checks it.

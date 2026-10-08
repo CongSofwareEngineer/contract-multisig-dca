@@ -59,7 +59,8 @@ contract DCAVaultForkTest is Test {
     address signer3 = makeAddr("signer3");
     address operator = makeAddr("operator");
     address treasury = makeAddr("treasury");
-    address user = makeAddr("user");
+    // Not makeAddr("user"): its key is public and on Base it carries a 7702 sweeper delegation -> DelegatedCaller.
+    address user = makeAddr("dcaForkDepositor");
 
     function setUp() public {
         if (block.chainid != 8453) {
