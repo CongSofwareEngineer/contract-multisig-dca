@@ -1,0 +1,51 @@
+# Deployment
+> Last updated: 2026-10-08
+
+## Overview
+Constructor arguments, the deploy script, address verification and the post-deploy checklist.
+Sub-logics:
+1. Constructor
+2. Deploy script
+3. Verified Base addresses
+4. Post-deploy checklist
+
+## 1. Constructor
+`DCAVault(usdc, uniV3Router, permit2, universalRouter, morphoVault, signers[], operators[], withdrawAddresses[], tokens[], fees[])`
+Validates: all protocol addresses non-zero; `IERC4626(morphoVault).asset() == usdc`; signers ≥ 2, non-zero, unique; operators non-zero, unique, not signers; withdraw addresses non-zero, unique; tokens non-zero, unique and include `usdc`; fees > 0, unique.
+No protocol address is hardcoded in the contract.
+
+## 2. Deploy script
+`script/Deploy.s.sol` reads everything from env (template: `.env.example`):
+`USDC, WETH, CBBTC, UNI_V3_ROUTER, PERMIT2, UNIVERSAL_ROUTER, MORPHO_VAULT, SIGNERS, OPERATORS, WITHDRAW_ADDRESSES, FEES, PRIVATE_KEY_DEPLOYER`.
+Lists are comma-separated without spaces. `OPERATORS` may be empty; `WITHDRAW_ADDRESSES` must not be.
+Pre-flight: requires chainId 8453, code at every address, Morpho asset == USDC; prints the full config.
+```bash
+cp .env.example .env   # fill in, never commit
+source .env
+forge script script/Deploy.s.sol --rpc-url $BASE_RPC_URL            # dry run, read the log
+forge script script/Deploy.s.sol --rpc-url $BASE_RPC_URL --broadcast --verify
+```
+
+## 3. Verified Base addresses (on-chain check 2026-10-08, block ~52.3M)
+| Name | Address | Check |
+|---|---|---|
+| USDC | `0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913` | symbol USDC, 6 dec |
+| WETH | `0x4200000000000000000000000000000000000006` | symbol WETH, 18 dec |
+| cbBTC | `0xcbB7C0000aB88B473b1f5aFd9ef808440eed33Bf` | symbol cbBTC, 8 dec |
+| SwapRouter02 | `0x2626664c2603336E57B271c5C0b26F421741e481` | code ✓, swaps pass on fork |
+| QuoterV2 | `0x3d4e44Eb1374240CE5F1B871ab261CD16335B76a` | quotes work on fork |
+| V3 Factory | `0x33128a8fC17869897dcE68Ed026d694621f6FDfD` | pools found |
+| Permit2 | `0x000000000022D473030F116dDEE9F6B43aC78BA3` | code ✓ |
+| UniversalRouter | `0x6ff5693b99212da76ad316178a184ab56d299b43` | code ✓ — re-check on docs.uniswap.org before Phase 2 |
+| Steakhouse High Yield USDC (bbqUSDC) | `0xbeeff7aE5E00Aae3Db302e4B0d8C883810a58100` | `asset()` = USDC, TVL ≈ 25M |
+
+The checks above were done via RPC; still cross-check on basescan.org before mainnet broadcast.
+
+## 4. Post-deploy checklist
+Spec §13: verify on basescan → check `getSigners()`, operators, withdraw addresses, tokens, fees, `morphoVault` → fund operator with ~0.01–0.02 ETH → small `depositAndSupply` → small buy (e.g. 5 USDC → WETH) → `pause()` + `Unpause` proposal → small `WithdrawBatch` → revoke the old EOA unlimited approvals → start the bot.
+
+**A third-party audit is required before significant funds.** Start with small amounts.
+
+## Related
+- [roles-multisig.md](roles-multisig.md)
+- [security-safety.md](security-safety.md)

@@ -1,0 +1,13 @@
+# Roles & Multisig
+- **Date**: 2026-10-08
+- **Feature**: roles-multisig (→ docs/instruction/roles-multisig.md)
+- **Type**: Added
+- **Files**: `src/DCAVault.sol`, `test/DCAVault.t.sol`, `test/DCAVault.security.t.sol`
+- **What**:
+  - **Signers**: constructor + AddSigner/RemoveSigner, MIN_SIGNERS = 2, swap-and-pop list.
+  - **Operators**: constructor + AddOperator/RemoveOperator, may be empty; signer ∩ operator = ∅ enforced everywhere.
+  - **Withdraw addresses**: constructor + Add/Remove proposals.
+  - **Threshold**: `getThreshold() = (n + 1) / 2`.
+- **Tests**: constructor validation, threshold table 2/3/4/5, role-conflict reverts, invariant #5. 125 passed, 0 failed (88 unit, 27 security, 10 fork on Base mainnet). Without BASE_RPC_URL the fork suite is skipped.
+- **Why**:
+  - Initial implementation of DCA_VAULT_SPEC.md §4 and §5.3.

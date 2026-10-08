@@ -1,0 +1,13 @@
+# Proposal System
+- **Date**: 2026-10-08
+- **Feature**: proposal-system (→ docs/instruction/proposal-system.md)
+- **Type**: Added
+- **Files**: `src/DCAVault.sol`, `test/DCAVault.t.sol`, `test/DCAVault.security.t.sol`
+- **What**:
+  - **Lifecycle**: propose (auto-approve) / approve (auto-execute at threshold) / cancel (proposer only); ids start at 1.
+  - **Vote counting**: re-counted from current `signers[]` on every approval; 7-day expiry (inclusive).
+  - **Types**: all 12 ProposalTypes from spec §5.3; propose-time validation + execute-time re-validation.
+  - **Helpers**: 12 `proposeXxx` helpers calling internal `_propose`.
+- **Tests**: mechanics, every type, expiry boundary, invariants #6/#7. 125 passed, 0 failed (88 unit, 27 security, 10 fork on Base mainnet). Without BASE_RPC_URL the fork suite is skipped.
+- **Why**:
+  - Initial implementation of DCA_VAULT_SPEC.md §5.3.

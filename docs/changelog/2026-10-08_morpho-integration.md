@@ -1,0 +1,13 @@
+# Morpho Integration
+- **Date**: 2026-10-08
+- **Feature**: morpho-integration (→ docs/instruction/morpho-integration.md)
+- **Type**: Added
+- **Files**: `src/DCAVault.sol`, `test/DCAVault.t.sol`, `test/DCAVault.fork.t.sol`, `test/mocks/MockMorphoVault.sol`
+- **What**:
+  - **depositAndSupply**: anyone, USDC only, not paused-gated.
+  - **morphoDeposit / morphoWithdraw**: operator, receiver/owner hardcoded.
+  - **ChangeMorphoVault**: redeem all → switch → supply whole USDC balance (incl. idle).
+  - **Views**: `totalUsdc()`.
+- **Tests**: unit with OZ ERC4626 mock; fork against Steakhouse bbqUSDC and migration to Gauntlet USDC Prime. 125 passed, 0 failed (88 unit, 27 security, 10 fork on Base mainnet). Without BASE_RPC_URL the fork suite is skipped.
+- **Why**:
+  - Initial implementation of DCA_VAULT_SPEC.md §5.1, §5.2, §5.3.

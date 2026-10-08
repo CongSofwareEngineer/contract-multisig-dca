@@ -1,0 +1,13 @@
+# Security & Safety
+- **Date**: 2026-10-08
+- **Feature**: security-safety (→ docs/instruction/security-safety.md)
+- **Type**: Added
+- **Files**: `src/DCAVault.sol`, `test/DCAVault.security.t.sol`, `test/mocks/JunkToken.sol`, `test/mocks/ReentrantMorphoVault.sol`
+- **What**:
+  - **Pause**: single-signer `pause()`, `Unpause` proposal.
+  - **Token whitelist**: Add/RemoveToken (USDC permanent), `getAllowedTokens()`, `getBalances()` over whitelist only.
+  - **WithdrawBatch**: whitelisted to/tokens, `max` support, USDC shortfall pulled from Morpho.
+  - **Hardening**: no receive/fallback, no delegatecall/selfdestruct, nonReentrant on all external-touching functions.
+- **Tests**: one test group per §10 invariant (1–12) incl. fuzzed malicious operator, bytecode opcode scan, junk token, reentrancy. 125 passed, 0 failed (88 unit, 27 security, 10 fork on Base mainnet). Without BASE_RPC_URL the fork suite is skipped.
+- **Why**:
+  - Initial implementation of DCA_VAULT_SPEC.md §5.1b, §5.3 (pause, WithdrawBatch), §10.
