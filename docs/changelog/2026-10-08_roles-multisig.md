@@ -2,7 +2,7 @@
 - **Date**: 2026-10-08
 - **Feature**: roles-multisig (→ docs/instruction/roles-multisig.md)
 - **Type**: Added
-- **Files**: `src/DCAVault.sol`, `test/DCAVault.t.sol`, `test/DCAVault.security.t.sol`
+- **Files**: `src/DCAVault.sol`, `src/vault/DCAVaultStorage.sol`, `src/vault/DCAVaultRoles.sol`, `test/DCAVault.t.sol`, `test/DCAVault.security.t.sol`
 - **What**:
   - **Signers**: constructor + AddSigner/RemoveSigner, MIN_SIGNERS = 2, swap-and-pop list.
   - **Operators**: constructor + AddOperator/RemoveOperator, may be empty; signer ∩ operator = ∅ enforced everywhere.

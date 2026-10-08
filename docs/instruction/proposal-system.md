@@ -10,6 +10,7 @@ Sub-logics:
 4. Helper `proposeXxx` functions
 
 ## Shared
+- Code: `src/vault/DCAVaultProposals.sol` (pause, propose / approve / cancel, `_validate`, `_execute`, `_withdrawBatch`); `ProposalType` / `Proposal` in `src/vault/DCAVaultStorage.sol`.
 - Storage: `proposals[id]` (`pType, data, proposer, createdAt, executed, cancelled`), `hasApproved[id][signer]`, `proposalCount`.
 - Constant: `PROPOSAL_TTL = 7 days`.
 - Events: `ProposalCreated(id, pType, proposer)`, `ProposalApproved(id, signer)`, `ProposalExecuted(id)`, `ProposalCancelled(id)`.

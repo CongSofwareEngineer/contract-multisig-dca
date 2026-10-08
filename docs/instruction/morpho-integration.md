@@ -10,6 +10,7 @@ Sub-logics:
 4. `ChangeMorphoVault` migration (proposal)
 
 ## Shared
+- Code: `src/vault/DCAVaultMorpho.sol` (`depositAndSupply`, `morphoDeposit` / `morphoWithdraw`, `_prepareUsdc`, `_changeMorphoVault`, `totalUsdc`, `getBalances`).
 - Storage: `morphoVault` (mutable only via proposal), immutable `usdc`.
 - Internal: `_supplyToMorpho(amount)` = `forceApprove(vault, amount)` → `deposit(amount, address(this))` → `forceApprove(vault, 0)`; `_withdrawFromMorpho(amount)` = `withdraw(amount, address(this), address(this))`.
 - Events: `Deposited(from, usdcAmount, shares)`, `MorphoDeposited(assets, shares)`, `MorphoWithdrawn(assets, shares)`, `MorphoVaultChanged(old, new, migratedAssets)`.

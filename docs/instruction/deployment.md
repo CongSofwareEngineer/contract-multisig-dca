@@ -8,6 +8,7 @@ Sub-logics:
 2. Deploy script
 3. Verified Base addresses
 4. Post-deploy checklist
+5. Source layout
 
 ## 1. Constructor
 `DCAVault(usdc, uniV3Router, permit2, universalRouter, morphoVault, signers[], operators[], withdrawAddresses[], tokens[], fees[])`
@@ -45,6 +46,24 @@ The checks above were done via RPC; still cross-check on basescan.org before mai
 Spec §13: verify on basescan → check `getSigners()`, operators, withdraw addresses, tokens, fees, `morphoVault` → fund operator with ~0.01–0.02 ETH → small `depositAndSupply` → small buy (e.g. 5 USDC → WETH) → `pause()` + `Unpause` proposal → small `WithdrawBatch` → revoke the old EOA unlimited approvals → start the bot.
 
 **A third-party audit is required before significant funds.** Start with small amounts.
+
+## 5. Source layout
+### Purpose
+`DCAVault` is split into abstract modules for readability. They are all compiled into **one** immutable contract (single deployment, no proxy, no delegatecall).
+### Files
+| File | Contents |
+|---|---|
+| `src/DCAVault.sol` | Final contract: constructor seeds signers / operators / withdraw addresses / tokens / fees. |
+| `src/vault/DCAVaultStorage.sol` | Types, constants, immutables, **all** state, events, errors, modifiers; base constructor sets protocol addresses + checks `asset() == usdc`. |
+| `src/vault/DCAVaultRoles.sol` | Role / whitelist setters, `getSigners`, `getAllowedTokens`, `getThreshold`. |
+| `src/vault/DCAVaultMorpho.sol` | Morpho deposit / withdraw / migration, `totalUsdc`, `getBalances`. |
+| `src/vault/DCAVaultSwap.sol` | V3 swaps + V4 stub. |
+| `src/vault/DCAVaultProposals.sol` | `pause`, proposal lifecycle, execution dispatch, `WithdrawBatch`. |
+
+Inheritance: `Storage ← Roles ← Morpho ← {Swap, Proposals} ← DCAVault`.
+### Edge cases
+- All state is declared only in `DCAVaultStorage`, so the storage layout is fixed in one place (identical to the pre-split single file).
+- Custom errors, events and `ProposalType` are declared in `DCAVaultStorage`; off-chain code / tests reference them as `DCAVaultStorage.X` (Solidity does not expose inherited errors as `DCAVault.X`). Selectors and ABI encoding are unchanged; only the ABI `internalType` label reads `DCAVaultStorage.ProposalType`.
 
 ## Related
 - [roles-multisig.md](roles-multisig.md)

@@ -3,6 +3,7 @@ pragma solidity ^0.8.24;
 
 import {Test} from "forge-std/Test.sol";
 import {DCAVault} from "../../src/DCAVault.sol";
+import {DCAVaultStorage} from "../../src/vault/DCAVaultStorage.sol";
 import {MockERC20} from "../mocks/MockERC20.sol";
 import {MockMorphoVault} from "../mocks/MockMorphoVault.sol";
 import {MockSwapRouter} from "../mocks/MockSwapRouter.sol";
@@ -93,7 +94,7 @@ abstract contract VaultTestBase is Test {
     }
 
     /// @dev Proposes from signer1 and approves from signer2 => executes with threshold 2.
-    function _passProposal(DCAVault.ProposalType t, bytes memory data) internal returns (uint256 id) {
+    function _passProposal(DCAVaultStorage.ProposalType t, bytes memory data) internal returns (uint256 id) {
         vm.prank(signer1);
         id = vault.propose(t, data);
         vm.prank(signer2);

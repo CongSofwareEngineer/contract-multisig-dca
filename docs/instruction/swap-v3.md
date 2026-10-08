@@ -10,6 +10,7 @@ Sub-logics:
 4. Atomic approvals & output measurement
 
 ## Shared
+- Code: `src/vault/DCAVaultSwap.sol` (`swapExactInputV3`, `withdrawAndSwapV3`, `_swapV3`); fee setter `_setAllowedFee` in `src/vault/DCAVaultRoles.sol`.
 - Immutable `uniV3Router`. Storage `allowedFee[uint24]`, `allowedToken`.
 - Event `Swapped(tokenIn, tokenOut, fee, amountIn, amountOut, version)` — `version = SWAP_VERSION_V3 = 3`.
 - Errors: `TokenNotAllowed`, `SameToken`, `ZeroAmount`, `DeadlinePassed`, `FeeNotAllowed`, `InsufficientBalance`, `InsufficientOutput`.

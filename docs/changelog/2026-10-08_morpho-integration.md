@@ -2,7 +2,7 @@
 - **Date**: 2026-10-08
 - **Feature**: morpho-integration (→ docs/instruction/morpho-integration.md)
 - **Type**: Added
-- **Files**: `src/DCAVault.sol`, `test/DCAVault.t.sol`, `test/DCAVault.fork.t.sol`, `test/mocks/MockMorphoVault.sol`
+- **Files**: `src/vault/DCAVaultMorpho.sol`, `test/DCAVault.t.sol`, `test/DCAVault.fork.t.sol`, `test/mocks/MockMorphoVault.sol`
 - **What**:
   - **depositAndSupply**: anyone, USDC only, not paused-gated.
   - **morphoDeposit / morphoWithdraw**: operator, receiver/owner hardcoded.

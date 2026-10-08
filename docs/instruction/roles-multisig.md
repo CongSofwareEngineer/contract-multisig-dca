@@ -11,6 +11,7 @@ Sub-logics:
 4. Threshold
 
 ## Shared
+- Code: `src/vault/DCAVaultRoles.sol` (setters, `getSigners`, `getThreshold`); state + modifiers in `src/vault/DCAVaultStorage.sol`.
 - Storage: `isSigner`, `signers[]`, `isOperator`, `isWithdrawAddress`.
 - Constant: `MIN_SIGNERS = 2`.
 - Modifiers: `onlySigner`, `onlyOperator`.

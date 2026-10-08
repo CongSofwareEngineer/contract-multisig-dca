@@ -2,11 +2,13 @@
 - **Date**: 2026-10-08
 - **Feature**: deployment (→ docs/instruction/deployment.md)
 - **Type**: Added
-- **Files**: `script/Deploy.s.sol`, `.env.example`, `.gitignore`, `foundry.toml`
+- **Files**: `script/Deploy.s.sol`, `.env.example`, `.gitignore`, `foundry.toml`, `src/DCAVault.sol`, `src/vault/*.sol`, `test/DCAVault.t.sol`, `test/DCAVault.security.t.sol`, `test/helpers/VaultTestBase.sol`, `DCA_VAULT_SPEC.md`, `CLAUDE.md`
 - **What**:
   - **Project setup**: Foundry 1.8.5, solc 0.8.24, OpenZeppelin v5.1.0, forge-std.
   - **Deploy script**: env-driven config, chainId + code + Morpho-asset pre-flight, prints config.
   - **Address verification**: all spec §3 addresses checked on-chain; pool liquidity per fee tier recorded.
-- **Tests**: dry-run of Deploy.s.sol against Base (simulation reached deploy; no broadcast). 125 passed, 0 failed (88 unit, 27 security, 10 fork on Base mainnet). Without BASE_RPC_URL the fork suite is skipped.
+  - **Source layout**: `DCAVault` split into abstract modules under `src/vault/` (`DCAVaultStorage` → `Roles` → `Morpho` → `Swap` / `Proposals`), compiled into one immutable contract. Storage layout and function / event / error selectors identical to the single-file version; tests reference errors, events and `ProposalType` via `DCAVaultStorage`. See docs/instruction/deployment.md §5.
+- **Tests**: dry-run of Deploy.s.sol against Base (simulation reached deploy; no broadcast). 125 passed, 0 failed (88 unit, 27 security, 10 fork on Base mainnet). Without BASE_RPC_URL the fork suite is skipped. After the source split: `forge test` 115 passed, 1 skipped (fork suite, no BASE_RPC_URL locally); ABI + storage layout diffed equal before/after.
 - **Why**:
   - Spec §11–§13 Phase 1 step 8.
+  - Source layout: the 840-line `DCAVault.sol` was hard to read; one file per concern makes review / audit easier.

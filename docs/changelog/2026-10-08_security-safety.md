@@ -2,7 +2,7 @@
 - **Date**: 2026-10-08
 - **Feature**: security-safety (→ docs/instruction/security-safety.md)
 - **Type**: Added
-- **Files**: `src/DCAVault.sol`, `test/DCAVault.security.t.sol`, `test/mocks/JunkToken.sol`, `test/mocks/ReentrantMorphoVault.sol`
+- **Files**: `src/vault/DCAVaultStorage.sol`, `src/vault/DCAVaultRoles.sol`, `src/vault/DCAVaultProposals.sol`, `test/DCAVault.security.t.sol`, `test/mocks/JunkToken.sol`, `test/mocks/ReentrantMorphoVault.sol`
 - **What**:
   - **Pause**: single-signer `pause()`, `Unpause` proposal.
   - **Token whitelist**: Add/RemoveToken (USDC permanent), `getAllowedTokens()`, `getBalances()` over whitelist only.

@@ -3,6 +3,7 @@ pragma solidity ^0.8.24;
 
 import {VaultTestBase} from "./helpers/VaultTestBase.sol";
 import {DCAVault} from "../src/DCAVault.sol";
+import {DCAVaultStorage} from "../src/vault/DCAVaultStorage.sol";
 import {MockERC20} from "./mocks/MockERC20.sol";
 import {MockMorphoVault} from "./mocks/MockMorphoVault.sol";
 import {JunkToken} from "./mocks/JunkToken.sol";
@@ -52,13 +53,13 @@ contract DCAVaultSecurityTest is VaultTestBase {
 
     function test_Invariant1_OperatorCannotUseSignerFunctions() public {
         vm.startPrank(operator);
-        vm.expectRevert(DCAVault.NotSigner.selector);
-        vault.propose(DCAVault.ProposalType.AddWithdrawAddress, abi.encode(operator));
-        vm.expectRevert(DCAVault.NotSigner.selector);
+        vm.expectRevert(DCAVaultStorage.NotSigner.selector);
+        vault.propose(DCAVaultStorage.ProposalType.AddWithdrawAddress, abi.encode(operator));
+        vm.expectRevert(DCAVaultStorage.NotSigner.selector);
         vault.proposeWithdrawBatch(_addrs(address(weth)), new uint256[](1), treasury);
-        vm.expectRevert(DCAVault.NotSigner.selector);
+        vm.expectRevert(DCAVaultStorage.NotSigner.selector);
         vault.approve(1);
-        vm.expectRevert(DCAVault.NotSigner.selector);
+        vm.expectRevert(DCAVaultStorage.NotSigner.selector);
         vault.proposeAddSigner(operator);
         vm.stopPrank();
     }
@@ -75,7 +76,7 @@ contract DCAVaultSecurityTest is VaultTestBase {
         router.setLieAboutOutput(true);
         vm.prank(operator);
         // Router delivers half of what the operator demanded but returns a huge amountOut.
-        vm.expectRevert(DCAVault.InsufficientOutput.selector);
+        vm.expectRevert(DCAVaultStorage.InsufficientOutput.selector);
         vault.swapExactInputV3(address(weth), address(usdc), FEE_LOW, 1 ether, 1500e6, block.timestamp);
     }
 
@@ -115,7 +116,7 @@ contract DCAVaultSecurityTest is VaultTestBase {
         vm.stopPrank();
 
         MockMorphoVault newVault = new MockMorphoVault(usdc);
-        _passProposal(DCAVault.ProposalType.ChangeMorphoVault, abi.encode(address(newVault)));
+        _passProposal(DCAVaultStorage.ProposalType.ChangeMorphoVault, abi.encode(address(newVault)));
         _assertNoAllowances();
         assertEq(usdc.allowance(address(vault), address(newVault)), 0);
     }
@@ -134,7 +135,7 @@ contract DCAVaultSecurityTest is VaultTestBase {
         uint256[] memory amounts = new uint256[](1);
         amounts[0] = 1 ether;
         vm.prank(signer1);
-        vm.expectRevert(DCAVault.WithdrawAddressNotAllowed.selector);
+        vm.expectRevert(DCAVaultStorage.WithdrawAddressNotAllowed.selector);
         vault.proposeWithdrawBatch(_addrs(address(weth)), amounts, signer1);
     }
 
@@ -144,7 +145,7 @@ contract DCAVaultSecurityTest is VaultTestBase {
         uint256[] memory amounts = new uint256[](1);
         amounts[0] = 1 ether;
         vm.prank(signer1);
-        vm.expectRevert(DCAVault.TokenNotAllowed.selector);
+        vm.expectRevert(DCAVaultStorage.TokenNotAllowed.selector);
         vault.proposeWithdrawBatch(_addrs(address(other)), amounts, treasury);
     }
 
@@ -153,21 +154,21 @@ contract DCAVaultSecurityTest is VaultTestBase {
         amounts[0] = 1 ether;
         vm.prank(signer1);
         uint256 id = vault.proposeWithdrawBatch(_addrs(address(weth)), amounts, treasury);
-        _passProposal(DCAVault.ProposalType.RemoveToken, abi.encode(address(weth)));
+        _passProposal(DCAVaultStorage.ProposalType.RemoveToken, abi.encode(address(weth)));
         vm.prank(signer2);
-        vm.expectRevert(DCAVault.TokenNotAllowed.selector);
+        vm.expectRevert(DCAVaultStorage.TokenNotAllowed.selector);
         vault.approve(id);
     }
 
     // =========================================================== #5 signers never < 2
 
     function test_Invariant5_CannotDropBelowMinSigners() public {
-        _passProposal(DCAVault.ProposalType.RemoveSigner, abi.encode(signer3));
+        _passProposal(DCAVaultStorage.ProposalType.RemoveSigner, abi.encode(signer3));
         assertEq(vault.getSigners().length, 2);
         vm.startPrank(signer1);
-        vm.expectRevert(DCAVault.TooFewSigners.selector);
+        vm.expectRevert(DCAVaultStorage.TooFewSigners.selector);
         vault.proposeRemoveSigner(signer2);
-        vm.expectRevert(DCAVault.TooFewSigners.selector);
+        vm.expectRevert(DCAVaultStorage.TooFewSigners.selector);
         vault.proposeRemoveSigner(signer1);
         vm.stopPrank();
     }
@@ -181,7 +182,7 @@ contract DCAVaultSecurityTest is VaultTestBase {
         vm.prank(signer2);
         vault.approve(a); // executes: signers = {1, 2}, threshold 1
         vm.prank(signer2);
-        vm.expectRevert(DCAVault.TooFewSigners.selector);
+        vm.expectRevert(DCAVaultStorage.TooFewSigners.selector);
         vault.approve(b);
         assertEq(vault.getSigners().length, 2);
     }
@@ -190,7 +191,7 @@ contract DCAVaultSecurityTest is VaultTestBase {
 
     function test_Invariant6_RemovedSignerVoteNotCounted() public {
         address signer4 = makeAddr("signer4");
-        _passProposal(DCAVault.ProposalType.AddSigner, abi.encode(signer4)); // 4 signers, threshold 2
+        _passProposal(DCAVaultStorage.ProposalType.AddSigner, abi.encode(signer4)); // 4 signers, threshold 2
 
         address op2 = makeAddr("op2");
         vm.prank(signer1);
@@ -223,7 +224,7 @@ contract DCAVaultSecurityTest is VaultTestBase {
         vm.prank(signer1);
         vault.approve(rm);
         vm.prank(signer3);
-        vm.expectRevert(DCAVault.NotSigner.selector);
+        vm.expectRevert(DCAVaultStorage.NotSigner.selector);
         vault.approve(id);
     }
 
@@ -234,7 +235,7 @@ contract DCAVaultSecurityTest is VaultTestBase {
         uint256 id = vault.proposeAddWithdrawAddress(attacker);
         vm.warp(block.timestamp + 7 days + 1);
         vm.prank(signer2);
-        vm.expectRevert(DCAVault.ProposalExpired.selector);
+        vm.expectRevert(DCAVaultStorage.ProposalExpired.selector);
         vault.approve(id);
         assertFalse(vault.isWithdrawAddress(attacker));
     }
@@ -242,10 +243,11 @@ contract DCAVaultSecurityTest is VaultTestBase {
     function test_Invariant7_ExecutedCannotReExecute() public {
         uint256[] memory amounts = new uint256[](1);
         amounts[0] = 1 ether;
-        uint256 id =
-            _passProposal(DCAVault.ProposalType.WithdrawBatch, abi.encode(_addrs(address(weth)), amounts, treasury));
+        uint256 id = _passProposal(
+            DCAVaultStorage.ProposalType.WithdrawBatch, abi.encode(_addrs(address(weth)), amounts, treasury)
+        );
         vm.prank(signer3);
-        vm.expectRevert(DCAVault.ProposalAlreadyExecuted.selector);
+        vm.expectRevert(DCAVaultStorage.ProposalAlreadyExecuted.selector);
         vault.approve(id);
         assertEq(weth.balanceOf(treasury), 1 ether);
     }
@@ -256,7 +258,7 @@ contract DCAVaultSecurityTest is VaultTestBase {
         vm.prank(signer1);
         vault.cancel(id);
         vm.prank(signer2);
-        vm.expectRevert(DCAVault.ProposalIsCancelled.selector);
+        vm.expectRevert(DCAVaultStorage.ProposalIsCancelled.selector);
         vault.approve(id);
         assertFalse(vault.isWithdrawAddress(attacker));
     }
@@ -267,15 +269,15 @@ contract DCAVaultSecurityTest is VaultTestBase {
         vm.prank(signer2);
         vault.pause();
         vm.startPrank(operator);
-        vm.expectRevert(DCAVault.IsPaused.selector);
+        vm.expectRevert(DCAVaultStorage.IsPaused.selector);
         vault.swapExactInputV3(address(weth), address(usdc), FEE_LOW, 1 ether, 1, block.timestamp);
-        vm.expectRevert(DCAVault.IsPaused.selector);
+        vm.expectRevert(DCAVaultStorage.IsPaused.selector);
         vault.withdrawAndSwapV3(address(weth), FEE_LOW, 1e6, 1, block.timestamp);
-        vm.expectRevert(DCAVault.IsPaused.selector);
+        vm.expectRevert(DCAVaultStorage.IsPaused.selector);
         vault.morphoDeposit(1);
-        vm.expectRevert(DCAVault.IsPaused.selector);
+        vm.expectRevert(DCAVaultStorage.IsPaused.selector);
         vault.morphoWithdraw(1);
-        vm.expectRevert(DCAVault.IsPaused.selector);
+        vm.expectRevert(DCAVaultStorage.IsPaused.selector);
         vault.swapExactInputV4(address(usdc), address(weth), 500, 10, 1, 1, block.timestamp);
         vm.stopPrank();
     }
@@ -320,7 +322,7 @@ contract DCAVaultSecurityTest is VaultTestBase {
         (ok,) = address(vault).call{value: 1 ether}(hex"deadbeef");
         assertFalse(ok, "unknown selector with ETH must revert");
         vm.prank(user);
-        (ok,) = address(vault).call{value: 1}(abi.encodeCall(DCAVault.depositAndSupply, (1)));
+        (ok,) = address(vault).call{value: 1}(abi.encodeCall(vault.depositAndSupply, (1)));
         assertFalse(ok, "non-payable functions reject ETH");
         assertEq(address(vault).balance, 0);
     }
@@ -347,9 +349,9 @@ contract DCAVaultSecurityTest is VaultTestBase {
         MockERC20 other = new MockERC20("O", "O", 18);
         other.mint(address(vault), 1 ether);
         vm.startPrank(operator);
-        vm.expectRevert(DCAVault.TokenNotAllowed.selector);
+        vm.expectRevert(DCAVaultStorage.TokenNotAllowed.selector);
         vault.swapExactInputV3(address(other), address(usdc), FEE_LOW, 1 ether, 1, block.timestamp);
-        vm.expectRevert(DCAVault.TokenNotAllowed.selector);
+        vm.expectRevert(DCAVaultStorage.TokenNotAllowed.selector);
         vault.withdrawAndSwapV3(address(other), FEE_LOW, 1e6, 1, block.timestamp);
         vm.stopPrank();
     }
@@ -371,7 +373,7 @@ contract DCAVaultSecurityTest is VaultTestBase {
         vault.morphoWithdraw(5e6);
         vault.morphoDeposit(5e6);
         // a junk tokenIn is rejected by the whitelist, never by the junk token's own revert
-        vm.expectRevert(DCAVault.TokenNotAllowed.selector);
+        vm.expectRevert(DCAVaultStorage.TokenNotAllowed.selector);
         vault.swapExactInputV3(address(junk), address(usdc), FEE_LOW, 1, 1, block.timestamp);
         vm.stopPrank();
 
@@ -384,18 +386,19 @@ contract DCAVaultSecurityTest is VaultTestBase {
         amounts[0] = 100e6;
         amounts[1] = type(uint256).max;
         _passProposal(
-            DCAVault.ProposalType.WithdrawBatch, abi.encode(_addrs(address(usdc), address(cbbtc)), amounts, treasury)
+            DCAVaultStorage.ProposalType.WithdrawBatch,
+            abi.encode(_addrs(address(usdc), address(cbbtc)), amounts, treasury)
         );
         assertEq(usdc.balanceOf(treasury), 100e6);
         MockMorphoVault newVault = new MockMorphoVault(usdc);
-        _passProposal(DCAVault.ProposalType.ChangeMorphoVault, abi.encode(address(newVault)));
+        _passProposal(DCAVaultStorage.ProposalType.ChangeMorphoVault, abi.encode(address(newVault)));
         assertEq(vault.morphoVault(), address(newVault));
 
         // a junk-token withdraw proposal is rejected by the whitelist
         uint256[] memory one = new uint256[](1);
         one[0] = 1;
         vm.prank(signer1);
-        vm.expectRevert(DCAVault.TokenNotAllowed.selector);
+        vm.expectRevert(DCAVaultStorage.TokenNotAllowed.selector);
         vault.proposeWithdrawBatch(_addrs(address(junk)), one, treasury);
         _assertNoAllowances();
     }

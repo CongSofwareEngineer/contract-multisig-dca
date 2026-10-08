@@ -48,7 +48,13 @@ QuoterV2, signing with the operator key). It gets its own spec.
 ├── .env.example             # BASE_RPC_URL, PRIVATE_KEY_DEPLOYER, BASESCAN_API_KEY
 ├── DCA_VAULT_SPEC.md        # design spec — source of truth
 ├── src/
-│   ├── DCAVault.sol
+│   ├── DCAVault.sol             # final contract + constructor (inherits the modules below)
+│   ├── vault/
+│   │   ├── DCAVaultStorage.sol  # types, constants, immutables, state, events, errors, modifiers
+│   │   ├── DCAVaultRoles.sol    # signers / operators / withdraw addresses / token & fee whitelists
+│   │   ├── DCAVaultMorpho.sol   # depositAndSupply, morphoDeposit/Withdraw, ChangeMorphoVault migration
+│   │   ├── DCAVaultSwap.sol     # swapExactInputV3, withdrawAndSwapV3, V4 stub
+│   │   └── DCAVaultProposals.sol # pause, propose/approve/cancel, execute, WithdrawBatch
 │   └── interfaces/
 │       ├── ISwapRouter02.sol
 │       ├── IPermit2.sol

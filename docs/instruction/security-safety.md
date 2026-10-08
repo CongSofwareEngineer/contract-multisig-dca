@@ -10,7 +10,8 @@ Sub-logics:
 4. The §10 invariants and their tests
 
 ## Shared
-- Storage: `paused`, `allowedToken`, `_allowedTokenList` (private mirror for views).
+- Code: `pause()` + `Unpause` in `src/vault/DCAVaultProposals.sol`; `whenNotPaused` / `onlyOperator` modifiers and all state in `src/vault/DCAVaultStorage.sol`; token whitelist setters in `src/vault/DCAVaultRoles.sol`.
+- Storage: `paused`, `allowedToken`, `_allowedTokenList` (internal mirror for views, no public getter).
 - Events: `Paused(by)`, `Unpaused()`, `TokenAllowed(token, allowed)`, `Withdrawn(token, to, amount)`.
 - Errors: `IsPaused`, `NotPaused`, `TokenNotAllowed`, `CannotRemoveUsdc`, `UsdcNotAllowed`, `WithdrawAddressNotAllowed`, `BadArrayLength`, `InsufficientBalance`.
 - `ReentrancyGuard` on every state-changing function that touches an external contract.

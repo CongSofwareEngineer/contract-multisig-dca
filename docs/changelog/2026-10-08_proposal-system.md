@@ -2,7 +2,7 @@
 - **Date**: 2026-10-08
 - **Feature**: proposal-system (→ docs/instruction/proposal-system.md)
 - **Type**: Added
-- **Files**: `src/DCAVault.sol`, `test/DCAVault.t.sol`, `test/DCAVault.security.t.sol`
+- **Files**: `src/DCAVault.sol`, `src/vault/DCAVaultStorage.sol`, `src/vault/DCAVaultProposals.sol`, `test/DCAVault.t.sol`, `test/DCAVault.security.t.sol`
 - **What**:
   - **Lifecycle**: propose (auto-approve) / approve (auto-execute at threshold) / cancel (proposer only); ids start at 1.
   - **Vote counting**: re-counted from current `signers[]` on every approval; 7-day expiry (inclusive).

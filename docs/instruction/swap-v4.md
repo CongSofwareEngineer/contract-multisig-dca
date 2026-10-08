@@ -5,6 +5,7 @@
 **Not implemented in Phase 1.** The contract already stores immutable `permit2` and `universalRouter` and exposes a stub so the ABI shape is fixed.
 
 ## Shared
+- Code: stub `swapExactInputV4` in `src/vault/DCAVaultSwap.sol`; immutables in `src/vault/DCAVaultStorage.sol`.
 - Immutables `permit2`, `universalRouter` (constructor, must be non-zero).
 - Interfaces `src/interfaces/IPermit2.sol`, `src/interfaces/IUniversalRouter.sol`.
 
