@@ -53,8 +53,8 @@ QuoterV2, signing with the operator key). It gets its own spec.
 ├── src/
 │   ├── DCAVault.sol             # final contract + constructor (inherits the modules below)
 │   ├── vault/
-│   │   ├── DCAVaultStorage.sol  # types, constants, immutables, state, events, errors, modifiers
-│   │   ├── DCAVaultRoles.sol    # signers / operators / withdraw addresses / token & fee whitelists
+│   │   ├── DCAVaultStorage.sol  # types, constants, state, events, errors, modifiers (no immutables)
+│   │   ├── DCAVaultRoles.sol    # signers / operators / withdraw addresses / token & pool whitelists
 │   │   ├── DCAVaultMorpho.sol   # depositAndSupply, morphoDeposit, ChangeMorphoVault migration
 │   │   ├── DCAVaultSwap.sol     # shared swap checks + settlement (base of V3 / V4)
 │   │   ├── DCAVaultSwapV3.sol   # swapExactInputV3 (buy = Morpho withdraw + swap)
@@ -63,12 +63,20 @@ QuoterV2, signing with the operator key). It gets its own spec.
 │   └── interfaces/
 │       ├── ISwapRouter02.sol
 │       ├── IPermit2.sol
-│       └── IUniversalRouter.sol
+│       ├── IUniversalRouter.sol
+│       └── IV4Router.sol        # PoolKey / ExactInputSingleParams for the V4_SWAP command
 ├── test/
 │   ├── DCAVault.t.sol           # unit: roles, proposals, threshold, limits
 │   ├── DCAVault.fork.t.sol      # fork Base: deposit → Morpho, buy (Morpho → swap),
 │   │                            #   sell → Morpho, batch withdraw, change vault
-│   └── DCAVault.security.t.sol  # the §10 invariants + malicious-operator tests
+│   ├── DCAVault.security.t.sol  # the §10 invariants + malicious-operator tests
+│   ├── helpers/
+│   │   └── VaultTestBase.sol    # shared setUp: mocks, roles, token & pool whitelists
+│   └── mocks/                   # MockERC20, MockMorphoVault, MockSwapRouter, MockPermit2,
+│                                #   MockUniversalRouter, ReentrantMorphoVault, JunkToken
+├── docs/
+│   ├── instruction/             # one file per main feature — current behavior (§10.3)
+│   └── changelog/               # YYYY-MM-DD_<feature-name>.md (§10.2)
 └── script/
     └── Deploy.s.sol             # reads addresses from env/config, deploys, verifies
 ```
@@ -158,14 +166,16 @@ Also:
   Slippage is the bot's job via `amountOutMinimum` (contract only checks `> 0`).
 - **Contract size is ~634 B under the EIP-170 limit** (24,576 B). Run `forge build --sizes`
   after any change; deploy fails on mainnet if it goes over.
-- **Pool fee tiers in practice:** USDC/WETH → `500`, WETH/cbBTC → `3000`;
-  verify USDC/cbBTC liquidity on a fork before using it.
+- **Pool whitelist in practice** (one side is always the stable; checked on a Base fork
+  2026-10-08): V3 USDC/WETH `500`, V3 USDC/cbBTC `500`, V4 USDC/WETH `500/10` and
+  `3000/60`, V4 USDC/cbBTC `500/10`. A WETH/cbBTC pool can never be used — one side must
+  be `stableToken` (`PairNotAllowed`).
 - Decimals differ — USDC 6, cbBTC 8, WETH 18. Never assume 18.
 - **Verify every Base address on basescan.org** before putting it in the deploy script.
   Addresses are listed in [DCA_VAULT_SPEC.md §3](DCA_VAULT_SPEC.md).
-- V4 (`swapExactInputV4` via UniversalRouter + Permit2) is **Phase 2**. Phase 1 may leave
-  an interface/stub. When built: the contract **builds commands/inputs itself** — it never
-  accepts raw calldata from the operator — and `hooks` in `PoolKey` must be `address(0)`.
+- V4 (`swapExactInputV4` via UniversalRouter + Permit2) is **implemented** (2026-10-08 —
+  no longer a stub). The contract **builds commands/inputs itself** — it never accepts raw
+  calldata from the operator — and `hooks` in `PoolKey` is hardcoded to `address(0)`.
 
 ## 7. Build & Test Commands
 
@@ -213,7 +223,8 @@ Do not stack several unverified steps.
 7. Full test suite (unit + fork + security)
 8. Deploy script
 
-**Phase 2:** `swapExactInputV4` via UniversalRouter + Permit2.
+**Phase 2 (done 2026-10-08):** `swapExactInputV4` via UniversalRouter + Permit2,
+incl. native ETH.
 
 Post-deploy operational checklist: [DCA_VAULT_SPEC.md §13](DCA_VAULT_SPEC.md).
 
@@ -229,9 +240,9 @@ inside* that file. Expected set (~6 files):
 |---|---|
 | `roles-multisig` | signers, operators, withdraw addresses, threshold |
 | `proposal-system` | propose / approve / execute / cancel, expiry, each ProposalType |
-| `morpho-integration` | `depositAndSupply`, `morphoDeposit`/`Withdraw`, `ChangeMorphoVault` migration |
+| `morpho-integration` | `depositAndSupply`, `morphoDeposit` (no public Morpho withdraw), `ChangeMorphoVault` / `ChangeStableToken` migration |
 | `swap-v3` | `swapExactInputV3` (buy = Morpho withdraw + swap), pool whitelist `allowedPool` (shared with V4), atomic approvals |
-| `swap-v4` | Phase 2: UniversalRouter + Permit2 |
+| `swap-v4` | `swapExactInputV4` via UniversalRouter + Permit2, native ETH, guarded `receive()` |
 | `security-safety` | `pause`/`Unpause`, token whitelist, anti-junk-token, the §10 invariants |
 | `deployment` | constructor args, deploy script, verification, post-deploy checklist |
 

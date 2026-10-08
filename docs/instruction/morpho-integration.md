@@ -20,7 +20,7 @@ Sub-logics:
 
 ## 1. depositAndSupply
 ### Entry points
-`depositAndSupply(uint256 amount)` — anyone, `nonReentrant`, **not** paused-gated.
+`depositAndSupply(uint256 amount)` — anyone, `notDelegated nonReentrant`, **not** paused-gated.
 ### Flow
 `safeTransferFrom(msg.sender → vault, amount)` of `stableToken` → `_supplyToMorpho(amount)` → emit `Deposited`.
 ### Security

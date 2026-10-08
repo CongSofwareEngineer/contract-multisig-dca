@@ -65,7 +65,7 @@ All in `test/DCAVault.security.t.sol`:
 | 1 | Operator can't move tokens out | `testFuzz_Invariant1_OperatorCannotExtract`, `..._OperatorCannotUseSignerFunctions`, `..._RouterCannotPullMoreThanAmountIn`, `..._LyingRouterIsCaughtByBalanceDelta`, `..._V4RouterCannotPullMoreThanAmountIn`, `..._V4ShortOutputIsCaughtByBalanceDelta` (fuzz covers V3 + V4) |
 | 2 | Outputs go to `address(this)` | `test_Invariant2_*` |
 | 3 | Allowances 0 after each tx (router, Morpho, ERC20 → Permit2, Permit2 → UniversalRouter) | `test_Invariant3_AllowancesZeroAfterEveryFlow`, `test_Invariant3_V4Permit2AllowanceExpiresThisBlock` (+ fork `_assertNoAllowances` / `_assertNoPermit2Allowances`) |
-| 4 | Withdraw only via approved batch to whitelist | `test_Invariant4_*`, `test_Security_ChangeMorphoVaultRejectsFakeVault` |
+| 4 | Withdraw only via approved batch to whitelist | `test_Invariant4_*` (incl. non-whitelisted `to`, non-allowed token, token removed before execute) |
 | 5 | Signers ≥ 2 | `test_Invariant5_*` (incl. concurrent removals) |
 | 6 | Removed signer's votes don't count | `test_Invariant6_*`, `test_Reject_RemovedSignerRejectionNotCounted` |
 | 7 | Expired/executed/cancelled never execute | `test_Invariant7_*` |

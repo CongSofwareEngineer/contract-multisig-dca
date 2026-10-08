@@ -13,7 +13,7 @@ Sub-logics:
 
 ## Shared
 - Code: `src/vault/DCAVaultSwapV3.sol` (`swapExactInputV3`); `_prepareSwap` (checks + Morpho pull on a buy) and post-swap `_settleSwap`, shared with V4, live in the base `src/vault/DCAVaultSwap.sol`; pool whitelist setter `_setAllowedPool` / `_checkPoolConfig` in `src/vault/DCAVaultRoles.sol`.
-- Storage `uniV3Router` (constructor, then only via a `ChangeUniV3Router` proposal), `allowedPool[token][fee][tickSpacing]`, `stableToken`, `allowedToken`.
+- Storage `uniV3Router` (constructor, then only via a `ChangeUniV3Router` proposal), `_allowedPool[stable][token][fee][tickSpacing]`, `stableToken`, `allowedToken`.
 - Event `UniV3RouterChanged(oldRouter, newRouter)`; error `SameAddress`.
 - Event `Swapped(tokenIn, tokenOut, fee, amountIn, amountOut, version)` — `version = SWAP_VERSION_V3 = 3`; `MorphoWithdrawn(assets, shares)` on a buy, `MorphoDeposited` on a sell.
 - Errors: `TokenNotAllowed`, `PairNotAllowed`, `NativeNotSupported`, `ZeroAmount`, `DeadlinePassed`, `PoolNotAllowed`, `InsufficientBalance`, `InsufficientOutput`.
@@ -23,7 +23,7 @@ Sub-logics:
 `swapExactInputV3(tokenIn, tokenOut, fee, amountIn, amountOutMinimum, deadline)` — `onlyOperator whenNotPaused nonReentrant`, returns `amountOut`.
 ### Flow
 1. V3-only first: neither side is native ETH (`NativeNotSupported`). Then `_prepareSwap` (shared with V4):
-   - checks: `tokenIn == stableToken || tokenOut == stableToken` (else `PairNotAllowed`); the other side in `allowedToken` (else `TokenNotAllowed`; this also rejects stable → stable, since the stable is never in `allowedToken`); `amountIn > 0`, `amountOutMinimum > 0`, `block.timestamp <= deadline`; `allowedPool[token][fee][V3_POOL]` (else `PoolNotAllowed`);
+   - checks: `tokenIn == stableToken || tokenOut == stableToken` (else `PairNotAllowed`); the other side in `allowedToken` (else `TokenNotAllowed`; this also rejects stable → stable, since the stable is never in `allowedToken`); `amountIn > 0`, `amountOutMinimum > 0`, `block.timestamp <= deadline`; `_allowedPool[stableToken][token][fee][V3_POOL]` (else `PoolNotAllowed`);
    - **buy** (`tokenIn == stableToken`): only after every check passes, `IERC4626(morphoVault).withdraw(amountIn, address(this), address(this))` → emit `MorphoWithdrawn(amountIn, shares)`. So a buy is **one tx** and the stable never sits idle.
    Then `amountIn <= balance(tokenIn)` (`InsufficientBalance` — reachable for sells; a buy always has exactly `amountIn` after the withdraw).
 2. Snapshot `balance(tokenOut)`.

@@ -21,7 +21,7 @@ No protocol address is hardcoded in the contract.
 `STABLE_TOKEN` = USDC. `TOKENS` = tradable tokens (default `WETH,cbBTC`); append `0x0000000000000000000000000000000000000000` to also whitelist native ETH.
 Pool whitelist = three parallel lists, entry i = (`POOL_TOKENS[i]`, `POOL_FEES[i]`, `POOL_TICK_SPACINGS[i]`), tick spacing 0 = V3. Default: V3 USDC/WETH 500, V3 USDC/cbBTC 500, V4 USDC/WETH 500/10 and 3000/60, V4 USDC/cbBTC 500/10. Only list pools that exist with liquidity.
 Lists are comma-separated without spaces. `OPERATORS` may be empty; `WITHDRAW_ADDRESSES` must not be.
-Contract runtime size: 23,578 B (998 B under the EIP-170 limit of 24,576 B) — any new logic must be size-checked (`forge build --sizes`).
+Contract runtime size: 23,942 B (634 B under the EIP-170 limit of 24,576 B) — any new logic must be size-checked (`forge build --sizes`).
 Pre-flight: requires chainId 8453, code at every address (except `address(0)` in `TOKENS`), `STABLE_TOKEN` not in `TOKENS`, Morpho asset == `STABLE_TOKEN`, `POOL_*` lists of equal length, every V3 pool entry exists (`UNI_V3_FACTORY.getPool(stable, token, fee) != 0`); prints the full config. V4 pool entries are not checked by the script — verify them on a fork first.
 ```bash
 cp .env.example .env   # fill in, never commit
