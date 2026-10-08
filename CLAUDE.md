@@ -145,9 +145,13 @@ Also:
   `this.propose(...)` — an external self-call makes `msg.sender` the contract itself.
 - **Threshold** = `(signerCount + 1) / 2` (≥ 50%, rounded up), in its own
   `getThreshold()` function. No extra logic. 2→1, 3→2, 4→2, 5→3.
-- **Operator safety limits = `allowedFee` only.** No per-tx or per-day caps, no TWAP
-  check. Slippage is the bot's job via `amountOutMinimum` (contract only checks `> 0`).
-  Constructor defaults: fee `500` and `3000`.
+- **Operator safety limits = the pool whitelist `allowedPool` only.** One entry = one pool
+  `(token, fee, tickSpacing)` vs the stable; `tickSpacing = 0` = V3 pool, `>= 1` = hookless
+  V4 pool. Never split it back into independent fee / tick-spacing lists (the operator could
+  combine them into an attacker-created pool). No per-tx or per-day caps, no TWAP check.
+  Slippage is the bot's job via `amountOutMinimum` (contract only checks `> 0`).
+- **Contract size is ~338 B under the EIP-170 limit** (24,576 B). Run `forge build --sizes`
+  after any change; deploy fails on mainnet if it goes over.
 - **Pool fee tiers in practice:** USDC/WETH → `500`, WETH/cbBTC → `3000`;
   verify USDC/cbBTC liquidity on a fork before using it.
 - Decimals differ — USDC 6, cbBTC 8, WETH 18. Never assume 18.
@@ -199,7 +203,7 @@ Do not stack several unverified steps.
 3. `depositAndSupply`, `morphoDeposit`, `morphoWithdraw`
 4. `swapExactInputV3`, `withdrawAndSwapV3` (auto-deposit to Morpho when selling to USDC)
 5. `WithdrawBatch`, `ChangeMorphoVault` (with migration)
-6. `allowedFee`, `pause()` (single signer) + `Unpause` proposal
+6. Pool whitelist (`allowedPool`), `pause()` (single signer) + `Unpause` proposal
 7. Full test suite (unit + fork + security)
 8. Deploy script
 
@@ -220,7 +224,7 @@ inside* that file. Expected set (~6 files):
 | `roles-multisig` | signers, operators, withdraw addresses, threshold |
 | `proposal-system` | propose / approve / execute / cancel, expiry, each ProposalType |
 | `morpho-integration` | `depositAndSupply`, `morphoDeposit`/`Withdraw`, `ChangeMorphoVault` migration |
-| `swap-v3` | `swapExactInputV3`, `withdrawAndSwapV3`, `allowedFee`, atomic approvals |
+| `swap-v3` | `swapExactInputV3`, `withdrawAndSwapV3`, pool whitelist `allowedPool` (shared with V4), atomic approvals |
 | `swap-v4` | Phase 2: UniversalRouter + Permit2 |
 | `security-safety` | `pause`/`Unpause`, token whitelist, anti-junk-token, the §10 invariants |
 | `deployment` | constructor args, deploy script, verification, post-deploy checklist |

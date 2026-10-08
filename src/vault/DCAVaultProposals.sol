@@ -136,23 +136,20 @@ abstract contract DCAVaultProposals is DCAVaultMorpho {
         return _propose(ProposalType.RemoveToken, abi.encode(token));
     }
 
-    /// @notice Proposes allowing / disallowing a Uniswap fee tier.
-    /// @param fee fee tier in hundredths of a bip
-    /// @param allowed new status
-    function proposeSetAllowedFee(uint24 fee, bool allowed) external onlySigner nonReentrant returns (uint256) {
-        return _propose(ProposalType.SetAllowedFee, abi.encode(fee, allowed));
-    }
-
-    /// @notice Proposes allowing / disallowing a Uniswap V4 tick spacing (used by `swapExactInputV4`).
-    /// @param tickSpacing tick spacing, in [MIN_TICK_SPACING, MAX_TICK_SPACING]
-    /// @param allowed new status
-    function proposeSetAllowedTickSpacing(int24 tickSpacing, bool allowed)
+    /// @notice Proposes allowing / disallowing one pool (stable <-> `token`) for operator swaps.
+    /// @dev Signers must check the pool exists with real liquidity before approving: an allowed pool that does
+    ///      not exist yet can be created and seeded by anyone (incl. an attacker holding the operator key).
+    /// @param token tradable token side of the pool (address(0) = native ETH, V4 only)
+    /// @param fee pool fee in hundredths of a bip, in [1, MAX_POOL_FEE]
+    /// @param tickSpacing `V3_POOL` (0) for the Uniswap V3 pool, or the V4 tick spacing in [1, 32767]
+    /// @param allowed true to add the entry, false to remove it
+    function proposeSetAllowedPool(address token, uint24 fee, int24 tickSpacing, bool allowed)
         external
         onlySigner
         nonReentrant
         returns (uint256)
     {
-        return _propose(ProposalType.SetAllowedTickSpacing, abi.encode(tickSpacing, allowed));
+        return _propose(ProposalType.SetAllowedPool, abi.encode(token, fee, tickSpacing, allowed));
     }
 
     /// @notice Proposes replacing the Uniswap V3 SwapRouter02 used by operator swaps.
@@ -292,12 +289,10 @@ abstract contract DCAVaultProposals is DCAVaultMorpho {
             if (token == stableToken) revert StableNotTradable();
         } else if (pType == ProposalType.RemoveToken) {
             abi.decode(data, (address)); // address(0) valid (native ETH); existence checked at execution
-        } else if (pType == ProposalType.SetAllowedFee) {
-            (uint24 fee,) = abi.decode(data, (uint24, bool));
-            if (fee == 0) revert InvalidFee();
-        } else if (pType == ProposalType.SetAllowedTickSpacing) {
-            (int24 tickSpacing,) = abi.decode(data, (int24, bool));
-            if (tickSpacing < MIN_TICK_SPACING || tickSpacing > MAX_TICK_SPACING) revert InvalidTickSpacing();
+        } else if (pType == ProposalType.SetAllowedPool) {
+            (address token, uint24 fee, int24 tickSpacing, bool allowed) =
+                abi.decode(data, (address, uint24, int24, bool));
+            if (allowed) _checkPoolConfig(token, fee, tickSpacing); // existence (add / remove) checked at execution
         } else if (pType == ProposalType.Unpause) {
             if (data.length != 0) revert BadArrayLength();
         } else {
@@ -321,12 +316,10 @@ abstract contract DCAVaultProposals is DCAVaultMorpho {
         } else if (pType == ProposalType.ChangeStableToken) {
             (address newStable, address newVault, address to) = abi.decode(data, (address, address, address));
             _changeStableToken(newStable, newVault, to);
-        } else if (pType == ProposalType.SetAllowedFee) {
-            (uint24 fee, bool allowed) = abi.decode(data, (uint24, bool));
-            _setAllowedFee(fee, allowed);
-        } else if (pType == ProposalType.SetAllowedTickSpacing) {
-            (int24 tickSpacing, bool allowed) = abi.decode(data, (int24, bool));
-            _setAllowedTickSpacing(tickSpacing, allowed);
+        } else if (pType == ProposalType.SetAllowedPool) {
+            (address token, uint24 fee, int24 tickSpacing, bool allowed) =
+                abi.decode(data, (address, uint24, int24, bool));
+            _setAllowedPool(token, fee, tickSpacing, allowed);
         } else if (pType == ProposalType.Unpause) {
             if (!paused) revert NotPaused();
             paused = false;

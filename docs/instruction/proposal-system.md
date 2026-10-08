@@ -59,20 +59,19 @@ Each handler re-validates against live state at execute time (state may have cha
 | `RemoveOperator` | `address` | must exist | same |
 | `ChangeMorphoVault` | `address newVault` | ≠ 0, ≠ current (no factory / `asset()` check — signers verify off-chain) | [morpho-integration §4](morpho-integration.md#4-changemorphovault-migration) |
 | `AddToken` / `RemoveToken` | `address` | Tradable tokens only; `address(0)` = native ETH is valid; `AddToken(stableToken)` → `StableNotTradable` | [security-safety §2](security-safety.md#2-stable--tradable-tokens--anti-junk-token) |
-| `SetAllowedFee` | `(uint24 fee, bool allowed)` | fee > 0 | [swap-v3 §3](swap-v3.md#3-allowedfee) |
+| `SetAllowedPool` | `(address token, uint24 fee, int24 tickSpacing, bool allowed)` | add: token ≠ stable, `1 <= fee <= 1_000_000`, `0 <= tickSpacing <= 32767` (0 = V3), no V3 entry for native ETH (propose + execute); not already listed (`Duplicate`). remove: must be listed (`NotFound`) | [swap-v3 §3](swap-v3.md#3-pool-whitelist-allowedpool--shared-with-v4) |
 | `Unpause` | empty bytes | must be paused at execute | [security-safety §1](security-safety.md#1-pause--unpause) |
 | `ChangeUniV3Router` | `address newRouter` | ≠ 0, ≠ current (`SameAddress`, propose + execute); not validated on-chain | [swap-v3 §5](swap-v3.md#5-changing-the-router-changeuniv3router) |
 | `ChangePermit2` | `address` | ≠ 0, ≠ current | [swap-v4 §3](swap-v4.md#3-changing-permit2--universalrouter) |
 | `ChangeUniversalRouter` | `address` | ≠ 0, ≠ current | same |
-| `SetAllowedTickSpacing` | `(int24 tickSpacing, bool allowed)` | `1 <= tickSpacing <= 32767` (`InvalidTickSpacing`, propose + execute) | [swap-v4 §2](swap-v4.md#2-allowedtickspacing-whitelist) |
 | `ChangeStableToken` | `(address newStable, address newVault, address to)` | non-zero; new ≠ current stable / vault; `newStable` not tradable; `to` whitelisted. Sweeps all old stable to `to` first | [morpho-integration §5](morpho-integration.md#5-changestabletoken) |
 
-The three `Change*` protocol-address types, then `SetAllowedTickSpacing`, then `ChangeStableToken` are **appended after `Unpause`** in the enum, so the numeric values of the older types did not change (17 types). `ChangeMorphoVault` and the three `Change*` types reject the current address already at propose time (`SameMorphoVault` / `SameAddress`); execute re-checks (two pending proposals for the same new address → the second reverts). `ChangeStableToken` swaps the stable and its Morpho vault after sweeping all old stable to `to`.
+16 types; `SetAllowedPool` = 10, `Unpause` = 11, then the three `Change*` protocol-address types and `ChangeStableToken` (= 15). Off-chain tooling must use these values. `ChangeMorphoVault` and the three `Change*` types reject the current address already at propose time (`SameMorphoVault` / `SameAddress`); execute re-checks (two pending proposals for the same new address → the second reverts). `ChangeStableToken` swaps the stable and its Morpho vault after sweeping all old stable to `to`.
 
 There is **no** proposal that approves arbitrary tokens / spenders.
 
 ## 4. Helper `proposeXxx` functions
-`proposeWithdrawBatch`, `proposeAddWithdrawAddress`, `proposeRemoveWithdrawAddress`, `proposeAddSigner`, `proposeRemoveSigner`, `proposeAddOperator`, `proposeRemoveOperator`, `proposeChangeMorphoVault`, `proposeAddToken`, `proposeRemoveToken`, `proposeSetAllowedFee`, `proposeUnpause`, `proposeChangeUniV3Router`, `proposeChangePermit2`, `proposeChangeUniversalRouter`, `proposeSetAllowedTickSpacing`, `proposeChangeStableToken`.
+`proposeWithdrawBatch`, `proposeAddWithdrawAddress`, `proposeRemoveWithdrawAddress`, `proposeAddSigner`, `proposeRemoveSigner`, `proposeAddOperator`, `proposeRemoveOperator`, `proposeChangeMorphoVault`, `proposeAddToken`, `proposeRemoveToken`, `proposeSetAllowedPool`, `proposeUnpause`, `proposeChangeUniV3Router`, `proposeChangePermit2`, `proposeChangeUniversalRouter`, `proposeChangeStableToken`.
 They ABI-encode the payload and call internal `_propose` — never `this.propose()`, which would make `msg.sender` the vault itself (tested: `proposer` is the calling signer).
 
 ## Related

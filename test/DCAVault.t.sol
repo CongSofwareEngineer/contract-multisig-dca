@@ -27,10 +27,11 @@ contract DCAVaultTest is VaultTestBase {
         assertTrue(vault.allowedToken(address(weth)) && vault.allowedToken(address(cbbtc)));
         assertFalse(vault.allowedToken(address(usdc)), "stable is not in the tradable list");
         assertFalse(vault.allowedToken(address(0)), "native ETH not whitelisted by default");
-        assertTrue(vault.allowedFee(500) && vault.allowedFee(3000));
-        assertFalse(vault.allowedFee(100));
-        assertTrue(vault.allowedTickSpacing(TS_LOW) && vault.allowedTickSpacing(TS_MED));
-        assertFalse(vault.allowedTickSpacing(1));
+        assertTrue(vault.allowedPool(address(weth), FEE_LOW, 0) && vault.allowedPool(address(weth), FEE_LOW, TS_LOW));
+        assertTrue(vault.allowedPool(address(cbbtc), FEE_MED, TS_MED));
+        assertFalse(vault.allowedPool(address(weth), FEE_LOW, TS_MED), "cross combo 500/60 not allowed");
+        assertFalse(vault.allowedPool(address(weth), FEE_MED, TS_LOW), "cross combo 3000/10 not allowed");
+        assertFalse(vault.allowedPool(address(weth), 100, 0));
         assertFalse(vault.paused());
         assertEq(vault.getAllowedTokens().length, 2);
     }
@@ -71,8 +72,6 @@ contract DCAVaultTest is VaultTestBase {
     }
 
     function test_Revert_Constructor_ZeroProtocolAddress() public {
-        address[] memory tokens = _addrs(address(weth));
-        uint24[] memory fees = new uint24[](0);
         vm.expectRevert(DCAVaultStorage.ZeroAddress.selector);
         new DCAVault(
             address(usdc),
@@ -83,90 +82,72 @@ contract DCAVaultTest is VaultTestBase {
             _addrs(signer1, signer2),
             _addrs(operator),
             _addrs(treasury),
-            tokens,
-            fees,
-            _tickSpacings()
+            _addrs(address(weth)),
+            new DCAVaultStorage.PoolConfig[](0)
         );
     }
 
     function test_Revert_Constructor_StableInTokens() public {
         vm.expectRevert(DCAVaultStorage.StableNotTradable.selector);
-        new DCAVault(
-            address(usdc),
-            address(router),
-            permit2,
-            universalRouter,
-            address(morpho),
-            _addrs(signer1, signer2),
-            _addrs(operator),
-            _addrs(treasury),
-            _addrs(address(weth), address(usdc)),
-            new uint24[](0),
-            _tickSpacings()
-        );
+        _deployWithPools(_addrs(address(weth), address(usdc)), new DCAVaultStorage.PoolConfig[](0));
     }
 
     function test_Revert_Constructor_DuplicateToken() public {
         vm.expectRevert(DCAVaultStorage.Duplicate.selector);
-        new DCAVault(
-            address(usdc),
-            address(router),
-            permit2,
-            universalRouter,
-            address(morpho),
-            _addrs(signer1, signer2),
-            _addrs(operator),
-            _addrs(treasury),
-            _addrs(address(weth), address(weth)),
-            new uint24[](0),
-            _tickSpacings()
-        );
+        _deployWithPools(_addrs(address(weth), address(weth)), new DCAVaultStorage.PoolConfig[](0));
     }
 
-    function test_Revert_Constructor_DuplicateFee() public {
-        uint24[] memory fees = new uint24[](2);
-        fees[0] = 500;
-        fees[1] = 500;
+    function test_Revert_Constructor_DuplicatePool() public {
+        DCAVaultStorage.PoolConfig[] memory p = new DCAVaultStorage.PoolConfig[](2);
+        p[0] = _pool(address(weth), 500, TS_LOW);
+        p[1] = _pool(address(weth), 500, TS_LOW);
         vm.expectRevert(DCAVaultStorage.Duplicate.selector);
-        new DCAVault(
-            address(usdc),
-            address(router),
-            permit2,
-            universalRouter,
-            address(morpho),
-            _addrs(signer1, signer2),
-            _addrs(operator),
-            _addrs(treasury),
-            _addrs(address(weth)),
-            fees,
-            _tickSpacings()
-        );
+        _deployWithPools(_addrs(address(weth)), p);
     }
 
-    function test_Revert_Constructor_DuplicateTickSpacing() public {
-        int24[] memory ts = new int24[](2);
-        ts[0] = 60;
-        ts[1] = 60;
-        vm.expectRevert(DCAVaultStorage.Duplicate.selector);
-        new DCAVault(
-            address(usdc),
-            address(router),
-            permit2,
-            universalRouter,
-            address(morpho),
-            _addrs(signer1, signer2),
-            _addrs(operator),
-            _addrs(treasury),
-            _addrs(address(weth)),
-            new uint24[](0),
-            ts
-        );
+    function test_Constructor_SameFeeDifferentPoolsAreDistinct() public {
+        // Same fee as a V3 entry and as a V4 entry, and the same (fee, spacing) for two tokens: 3 distinct pools.
+        DCAVaultStorage.PoolConfig[] memory p = new DCAVaultStorage.PoolConfig[](3);
+        p[0] = _pool(address(weth), 500, 0);
+        p[1] = _pool(address(weth), 500, TS_LOW);
+        p[2] = _pool(address(cbbtc), 500, TS_LOW);
+        DCAVault v = _deployWithPools(_addrs(address(weth), address(cbbtc)), p);
+        assertTrue(v.allowedPool(address(weth), 500, 0) && v.allowedPool(address(weth), 500, TS_LOW));
+        assertTrue(v.allowedPool(address(cbbtc), 500, TS_LOW));
+        assertFalse(v.allowedPool(address(cbbtc), 500, 0));
     }
 
-    function test_Revert_Constructor_InvalidTickSpacing() public {
-        int24[] memory ts = new int24[](1);
+    function test_Revert_Constructor_PoolWithStable() public {
+        vm.expectRevert(DCAVaultStorage.StableNotTradable.selector);
+        _deployWithPools(_addrs(address(weth)), _pools1(address(usdc), 500, TS_LOW));
+    }
+
+    function test_Revert_Constructor_PoolInvalidFee() public {
+        vm.expectRevert(DCAVaultStorage.InvalidFee.selector);
+        _deployWithPools(_addrs(address(weth)), _pools1(address(weth), 0, TS_LOW));
+        vm.expectRevert(DCAVaultStorage.InvalidFee.selector);
+        _deployWithPools(_addrs(address(weth)), _pools1(address(weth), 1_000_001, TS_LOW));
+        vm.expectRevert(DCAVaultStorage.InvalidFee.selector); // V4 dynamic-fee flag
+        _deployWithPools(_addrs(address(weth)), _pools1(address(weth), 0x800000, TS_LOW));
+    }
+
+    function test_Revert_Constructor_PoolInvalidTickSpacing() public {
         vm.expectRevert(DCAVaultStorage.InvalidTickSpacing.selector);
-        new DCAVault(
+        _deployWithPools(_addrs(address(weth)), _pools1(address(weth), 500, -1));
+        vm.expectRevert(DCAVaultStorage.InvalidTickSpacing.selector);
+        _deployWithPools(_addrs(address(weth)), _pools1(address(weth), 500, int24(type(int16).max) + 1));
+    }
+
+    function test_Revert_Constructor_NativeV3Pool() public {
+        vm.expectRevert(DCAVaultStorage.NativeNotSupported.selector);
+        _deployWithPools(_addrs(address(weth)), _pools1(address(0), 500, 0));
+    }
+
+    function _deployWithPools(address[] memory tokens, DCAVaultStorage.PoolConfig[] memory pools)
+        internal
+        returns (DCAVault)
+    {
+        return new DCAVault(
             address(usdc),
             address(router),
             permit2,
@@ -175,9 +156,8 @@ contract DCAVaultTest is VaultTestBase {
             _addrs(signer1, signer2),
             _addrs(operator),
             _addrs(treasury),
-            _addrs(address(weth)),
-            new uint24[](0),
-            ts
+            tokens,
+            pools
         );
     }
 
@@ -363,11 +343,29 @@ contract DCAVaultTest is VaultTestBase {
         vault.swapExactInputV3(address(usdc), address(weth), FEE_LOW, 1e6, 1, 999);
     }
 
-    function test_Revert_SwapExactInputV3_FeeNotAllowed() public {
+    function test_Revert_SwapExactInputV3_PoolNotAllowed() public {
         usdc.mint(address(vault), 1e6);
         vm.prank(operator);
-        vm.expectRevert(DCAVaultStorage.FeeNotAllowed.selector);
+        vm.expectRevert(DCAVaultStorage.PoolNotAllowed.selector);
         vault.swapExactInputV3(address(usdc), address(weth), 10000, 1e6, 1, block.timestamp);
+    }
+
+    /// @dev A V4 entry for the same token + fee does not unlock the V3 pool.
+    function test_Revert_SwapExactInputV3_OnlyV4EntryListed() public {
+        _passProposal(DCAVaultStorage.ProposalType.SetAllowedPool, abi.encode(address(weth), FEE_LOW, int24(0), false));
+        assertTrue(vault.allowedPool(address(weth), FEE_LOW, TS_LOW));
+        usdc.mint(address(vault), 1e6);
+        vm.prank(operator);
+        vm.expectRevert(DCAVaultStorage.PoolNotAllowed.selector);
+        vault.swapExactInputV3(address(usdc), address(weth), FEE_LOW, 1e6, 1, block.timestamp);
+    }
+
+    function test_Revert_WithdrawAndSwapV3_PoolNotAllowedBeforeMorpho() public {
+        _deposit(10e6);
+        vm.prank(operator);
+        vm.expectRevert(DCAVaultStorage.PoolNotAllowed.selector);
+        vault.withdrawAndSwapV3(address(weth), 10000, 1e6, 1, block.timestamp);
+        assertEq(morpho.balanceOf(address(vault)), 10e6);
     }
 
     function test_Revert_SwapExactInputV3_InsufficientBalance() public {
@@ -467,18 +465,49 @@ contract DCAVaultTest is VaultTestBase {
         _assertNoAllowances();
     }
 
-    function test_Revert_SwapExactInputV4_TickSpacingNotAllowed() public {
+    function test_Revert_SwapExactInputV4_TickSpacingNotListed() public {
         usdc.mint(address(vault), 1e6);
         vm.prank(operator);
-        vm.expectRevert(DCAVaultStorage.TickSpacingNotAllowed.selector);
+        vm.expectRevert(DCAVaultStorage.PoolNotAllowed.selector);
         vault.swapExactInputV4(address(usdc), address(weth), FEE_LOW, 1, 1e6, 1, block.timestamp);
     }
 
-    function test_Revert_SwapExactInputV4_FeeNotAllowed() public {
+    function test_Revert_SwapExactInputV4_FeeNotListed() public {
         usdc.mint(address(vault), 1e6);
         vm.prank(operator);
-        vm.expectRevert(DCAVaultStorage.FeeNotAllowed.selector);
+        vm.expectRevert(DCAVaultStorage.PoolNotAllowed.selector);
         vault.swapExactInputV4(address(usdc), address(weth), 100, TS_LOW, 1e6, 1, block.timestamp);
+    }
+
+    /// @dev 500 and 60 are each used by some listed pool, but (500, 60) is not a listed pool: the operator
+    ///      cannot mix a fee and a spacing into a fresh pool it could seed at a rigged price.
+    function test_Revert_SwapExactInputV4_CrossComboNotAllowed() public {
+        usdc.mint(address(vault), 1e6);
+        vm.startPrank(operator);
+        vm.expectRevert(DCAVaultStorage.PoolNotAllowed.selector);
+        vault.swapExactInputV4(address(usdc), address(weth), FEE_LOW, TS_MED, 1e6, 1, block.timestamp);
+        vm.expectRevert(DCAVaultStorage.PoolNotAllowed.selector);
+        vault.swapExactInputV4(address(usdc), address(weth), FEE_MED, TS_LOW, 1e6, 1, block.timestamp);
+        vm.stopPrank();
+    }
+
+    /// @dev A pool listed for one token does not unlock the same (fee, spacing) for another token.
+    function test_Revert_SwapExactInputV4_PoolListedForOtherTokenOnly() public {
+        _passProposal(DCAVaultStorage.ProposalType.SetAllowedPool, abi.encode(address(cbbtc), FEE_MED, TS_MED, false));
+        assertTrue(vault.allowedPool(address(weth), FEE_MED, TS_MED));
+        usdc.mint(address(vault), 1e6);
+        vm.prank(operator);
+        vm.expectRevert(DCAVaultStorage.PoolNotAllowed.selector);
+        vault.swapExactInputV4(address(usdc), address(cbbtc), FEE_MED, TS_MED, 1e6, 1, block.timestamp);
+    }
+
+    /// @dev tickSpacing 0 is the V3 marker: it must never unlock a V4 swap, even with a V3 entry listed.
+    function test_Revert_SwapExactInputV4_V3MarkerRejected() public {
+        assertTrue(vault.allowedPool(address(weth), FEE_LOW, 0));
+        usdc.mint(address(vault), 1e6);
+        vm.prank(operator);
+        vm.expectRevert(DCAVaultStorage.PoolNotAllowed.selector);
+        vault.swapExactInputV4(address(usdc), address(weth), FEE_LOW, 0, 1e6, 1, block.timestamp);
     }
 
     function test_Revert_SwapExactInputV4_NonUsdcPair() public {
@@ -930,56 +959,73 @@ contract DCAVaultTest is VaultTestBase {
         assertFalse(vault.allowedToken(address(0)));
     }
 
-    function test_Proposal_SetAllowedFee() public {
-        _passProposal(DCAVaultStorage.ProposalType.SetAllowedFee, abi.encode(uint24(100), true));
-        assertTrue(vault.allowedFee(100));
-        _passProposal(DCAVaultStorage.ProposalType.SetAllowedFee, abi.encode(uint24(500), false));
-        assertFalse(vault.allowedFee(500));
-        usdc.mint(address(vault), 1e6);
-        vm.prank(operator);
-        vm.expectRevert(DCAVaultStorage.FeeNotAllowed.selector);
-        vault.swapExactInputV3(address(usdc), address(weth), 500, 1e6, 1, block.timestamp);
-    }
-
-    function test_Revert_Proposal_SetAllowedFeeZero() public {
+    function test_Proposal_SetAllowedPool() public {
         vm.prank(signer1);
-        vm.expectRevert(DCAVaultStorage.InvalidFee.selector);
-        vault.proposeSetAllowedFee(0, true);
-    }
-
-    function test_Proposal_SetAllowedTickSpacing() public {
-        vm.prank(signer1);
-        uint256 id = vault.proposeSetAllowedTickSpacing(200, true);
-        assertFalse(vault.allowedTickSpacing(200), "needs threshold");
+        uint256 id = vault.proposeSetAllowedPool(address(weth), 100, 1, true);
+        assertFalse(vault.allowedPool(address(weth), 100, 1), "needs threshold");
         vm.prank(signer2);
         vm.expectEmit(false, false, false, true, address(vault));
-        emit DCAVaultStorage.TickSpacingAllowed(200, true);
+        emit DCAVaultStorage.PoolAllowed(address(weth), 100, 1, true);
         vault.approve(id);
-        assertTrue(vault.allowedTickSpacing(200));
+        assertTrue(vault.allowedPool(address(weth), 100, 1));
 
-        _passProposal(DCAVaultStorage.ProposalType.SetAllowedTickSpacing, abi.encode(TS_LOW, false));
-        assertFalse(vault.allowedTickSpacing(TS_LOW));
         usdc.mint(address(vault), 1e6);
         vm.prank(operator);
-        vm.expectRevert(DCAVaultStorage.TickSpacingNotAllowed.selector);
-        vault.swapExactInputV4(address(usdc), address(weth), FEE_LOW, TS_LOW, 1e6, 1, block.timestamp);
+        vault.swapExactInputV4(address(usdc), address(weth), 100, 1, 1e6, 1, block.timestamp);
     }
 
-    function test_Revert_Proposal_SetAllowedTickSpacingOutOfRange() public {
+    function test_Proposal_RemovePoolBlocksSwap() public {
+        vm.prank(signer1);
+        uint256 id = vault.proposeSetAllowedPool(address(weth), FEE_LOW, TS_LOW, false);
+        vm.prank(signer2);
+        vm.expectEmit(false, false, false, true, address(vault));
+        emit DCAVaultStorage.PoolAllowed(address(weth), FEE_LOW, TS_LOW, false);
+        vault.approve(id);
+        assertFalse(vault.allowedPool(address(weth), FEE_LOW, TS_LOW));
+        usdc.mint(address(vault), 1e6);
+        vm.prank(operator);
+        vm.expectRevert(DCAVaultStorage.PoolNotAllowed.selector);
+        vault.swapExactInputV4(address(usdc), address(weth), FEE_LOW, TS_LOW, 1e6, 1, block.timestamp);
+        // The V3 entry with the same fee is untouched.
+        vm.prank(operator);
+        vault.swapExactInputV3(address(usdc), address(weth), FEE_LOW, 1e6, 1, block.timestamp);
+    }
+
+    function test_Revert_Proposal_SetAllowedPoolDuplicateOrMissing() public {
+        vm.prank(signer1);
+        uint256 id = vault.proposeSetAllowedPool(address(weth), FEE_LOW, TS_LOW, true);
+        vm.prank(signer2);
+        vm.expectRevert(DCAVaultStorage.Duplicate.selector);
+        vault.approve(id);
+
+        vm.prank(signer1);
+        id = vault.proposeSetAllowedPool(address(weth), FEE_LOW, TS_MED, false);
+        vm.prank(signer2);
+        vm.expectRevert(DCAVaultStorage.NotFound.selector);
+        vault.approve(id);
+    }
+
+    function test_Revert_Proposal_SetAllowedPoolInvalid() public {
         vm.startPrank(signer1);
+        vm.expectRevert(DCAVaultStorage.StableNotTradable.selector);
+        vault.proposeSetAllowedPool(address(usdc), FEE_LOW, TS_LOW, true);
+        vm.expectRevert(DCAVaultStorage.InvalidFee.selector);
+        vault.proposeSetAllowedPool(address(weth), 0, TS_LOW, true);
+        vm.expectRevert(DCAVaultStorage.InvalidFee.selector);
+        vault.proposeSetAllowedPool(address(weth), 1_000_001, TS_LOW, true);
         vm.expectRevert(DCAVaultStorage.InvalidTickSpacing.selector);
-        vault.proposeSetAllowedTickSpacing(0, true);
+        vault.proposeSetAllowedPool(address(weth), FEE_LOW, -1, true);
         vm.expectRevert(DCAVaultStorage.InvalidTickSpacing.selector);
-        vault.proposeSetAllowedTickSpacing(-1, true);
-        vm.expectRevert(DCAVaultStorage.InvalidTickSpacing.selector);
-        vault.proposeSetAllowedTickSpacing(int24(type(int16).max) + 1, true);
+        vault.proposeSetAllowedPool(address(weth), FEE_LOW, int24(type(int16).max) + 1, true);
+        vm.expectRevert(DCAVaultStorage.NativeNotSupported.selector);
+        vault.proposeSetAllowedPool(address(0), FEE_LOW, 0, true);
         vm.stopPrank();
     }
 
-    function test_Revert_Proposal_SetAllowedTickSpacingNotSigner() public {
+    function test_Revert_Proposal_SetAllowedPoolNotSigner() public {
         vm.prank(operator);
         vm.expectRevert(DCAVaultStorage.NotSigner.selector);
-        vault.proposeSetAllowedTickSpacing(200, true);
+        vault.proposeSetAllowedPool(address(weth), 100, 1, true);
     }
 
     function test_Proposal_ChangeMorphoVaultMigrates() public {

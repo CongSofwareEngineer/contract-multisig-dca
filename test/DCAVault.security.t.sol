@@ -59,6 +59,22 @@ contract DCAVaultSecurityTest is VaultTestBase {
         try vault.swapExactInputV4(a, b, fee, spacings[f % 3], amount, 1, block.timestamp) {} catch {}
     }
 
+    /// @dev Pool whitelist: any (token, fee, tickSpacing) the signers did not list as one entry is rejected,
+    ///      for V3 (tickSpacing = V3_POOL) and V4 alike — the operator cannot route into a pool of its choosing.
+    function testFuzz_Security_UnlistedPoolAlwaysRejected(uint24 fee, int24 tickSpacing, bool buyWeth) public {
+        address token = buyWeth ? address(weth) : address(cbbtc);
+        vm.assume(!vault.allowedPool(token, fee, tickSpacing));
+        usdc.mint(address(vault), 1e6);
+        vm.startPrank(operator);
+        if (tickSpacing == 0) {
+            vm.expectRevert(DCAVaultStorage.PoolNotAllowed.selector);
+            vault.swapExactInputV3(address(usdc), token, fee, 1e6, 1, block.timestamp);
+        }
+        vm.expectRevert(DCAVaultStorage.PoolNotAllowed.selector);
+        vault.swapExactInputV4(address(usdc), token, fee, tickSpacing, 1e6, 1, block.timestamp);
+        vm.stopPrank();
+    }
+
     function test_Invariant1_OperatorCannotUseSignerFunctions() public {
         vm.startPrank(operator);
         vm.expectRevert(DCAVaultStorage.NotSigner.selector);
@@ -504,8 +520,7 @@ contract DCAVaultSecurityTest is VaultTestBase {
             _addrs(address(evil)),
             _addrs(treasury),
             tokens,
-            new uint24[](0),
-            _tickSpacings()
+            new DCAVaultStorage.PoolConfig[](0)
         );
         evil.arm(address(v));
         usdc.mint(user, 10e6);

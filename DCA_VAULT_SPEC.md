@@ -130,7 +130,7 @@ Thay thế cho mô hình EOA hiện tại (approve unlimited cho Uniswap V3 Rout
   - Không phải ETH native (`address(0)`) → `NativeNotSupported` (SwapRouter02 chỉ swap ERC20)
   - `amountIn > 0`, `amountOutMinimum > 0`
   - `block.timestamp <= deadline`
-  - `allowedFee[fee]` (xem mục 7)
+  - Pool `(token, fee, V3_POOL = 0)` nằm trong `allowedPool` (`PoolNotAllowed`; xem mục 7)
 - Atomic approve: `forceApprove(router, amountIn)` → `exactInputSingle(... recipient: address(this) ...)` → `forceApprove(router, 0)`
 - **`recipient` luôn là `address(this)`, hardcode, không nhận từ tham số.**
 - Nếu `tokenOut == stableToken` (lệnh bán) → tự động deposit số stable nhận được lên Morpho trong cùng tx.
@@ -151,7 +151,7 @@ Thay thế cho mô hình EOA hiện tại (approve unlimited cho Uniswap V3 Rout
 - `receiver` và `owner` luôn là `address(this)`.
 
 #### `swapExactInputV4(address tokenIn, address tokenOut, uint24 fee, int24 tickSpacing, uint256 amountIn, uint256 amountOutMinimum, uint256 deadline)` (implemented 2026-10-08, owner request)
-- Option bổ sung cho V3, cùng quy tắc: **một bên là `stableToken`**, bên kia trong `allowedToken`, `amountIn > 0`, `amountOutMinimum > 0`, `block.timestamp <= deadline`, `allowedFee[fee]` (dùng chung list với V3), **`allowedTickSpacing[tickSpacing]`** (xem mục 7). `amountIn` / `amountOutMinimum` ≤ `uint128.max` (không truncate).
+- Option bổ sung cho V3, cùng quy tắc: **một bên là `stableToken`**, bên kia trong `allowedToken`, `amountIn > 0`, `amountOutMinimum > 0`, `block.timestamp <= deadline`, **`tickSpacing >= 1`** và pool `(token, fee, tickSpacing)` nằm trong `allowedPool` (`PoolNotAllowed`; dùng chung whitelist với V3, xem mục 7). `amountIn` / `amountOutMinimum` ≤ `uint128.max` (không truncate).
 - Flow: `forceApprove(tokenIn → Permit2, amountIn)` → `IPermit2.approve(tokenIn, universalRouter, uint160(amountIn), uint48(block.timestamp))` → contract **tự build** commands/inputs cho `UniversalRouter.execute` (command `V4_SWAP`, actions `SWAP_EXACT_IN_SINGLE` + `SETTLE_ALL(tokenIn, amountIn)` + `TAKE_ALL(tokenOut, amountOutMinimum)`) → reset Permit2 allowance (`approve(..., 0, 0)`) và ERC20 allowance về 0.
 - **Không nhận raw calldata từ operator.** Operator chỉ truyền: tokenIn, tokenOut, fee, tickSpacing, amountIn, amountOutMinimum, deadline.
 - `PoolKey`: `currency0/1` = 2 token sắp theo address, `zeroForOne = tokenIn < tokenOut`, `hooks` **hardcode `address(0)`** (không cho pool có hook lạ), `hookData = ""`.
@@ -204,15 +204,14 @@ Thay thế cho mô hình EOA hiện tại (approve unlimited cho Uniswap V3 Rout
 | `RemoveOperator` | `address` | — (cho phép xóa hết operator) |
 | `ChangeMorphoVault` | `address newVault` | Chỉ check `newVault != 0` và `!= vault hiện tại`. **Không check factory / `asset()` on-chain** — owner quyết định: vault là địa chỉ multisig chỉ định, signers tự kiểm tra trước khi approve. Đổi được **chỉ** qua proposal đủ threshold. **Tự migrate:** `redeem` toàn bộ shares ở vault cũ → deposit toàn bộ stable vào vault mới. |
 | `AddToken` / `RemoveToken` | `address` | Token mua bán. `address(0)` hợp lệ (= ETH native, chỉ dùng được ở V4). `AddToken(stableToken)` → `StableNotTradable`. |
-| `SetAllowedFee` | `(uint24 fee, bool allowed)` | — |
+| `SetAllowedPool` | `(address token, uint24 fee, int24 tickSpacing, bool allowed)` | 1 item = 1 pool (stable ↔ `token`). `tickSpacing = 0` = pool V3, `>= 1` = pool V4 hookless. Thêm: `token != stableToken`, `1 <= fee <= 1_000_000`, `0 <= tickSpacing <= 32767`, không có pool V3 cho ETH native, chưa có trong list (`Duplicate`). Xóa: phải đang có (`NotFound`). (chốt 2026-10-08) |
 | `Unpause` | — | Mở lại hoạt động cho operator. |
 | `ChangeUniV3Router` | `address` | `!= 0`, `!= router hiện tại`. Không validate on-chain — signers tự kiểm tra trước khi approve (router nhận `tokenIn` khi swap). Không cần migrate allowance vì contract không có standing approval. (chốt 2026-10-08) |
 | `ChangePermit2` | `address` | `!= 0`, `!= hiện tại`. (chốt 2026-10-08) |
 | `ChangeUniversalRouter` | `address` | `!= 0`, `!= hiện tại`. (chốt 2026-10-08) |
-| `SetAllowedTickSpacing` | `(int24 tickSpacing, bool allowed)` | `1 <= tickSpacing <= 32767`. Cho V4. (chốt 2026-10-08) |
 | `ChangeStableToken` | `(address newStable, address newVault, address to)` | `newStable`, `newVault != 0`; `newStable != stableToken`; `newVault != morphoVault`; `newStable` không nằm trong `allowedToken`; `to` trong `isWithdrawAddress`. **Rút sạch rồi mới đổi**: `redeem` toàn bộ shares ở vault cũ → chuyển **toàn bộ** stable cũ (idle + vừa redeem) về `to` → set `stableToken = newStable`, `morphoVault = newVault`. `newVault` phải là Morpho vault của `newStable` — không validate on-chain. (chốt 2026-10-08) |
 
-> 3 loại proposal đổi địa chỉ protocol, rồi `SetAllowedTickSpacing`, `ChangeStableToken`, được **thêm vào cuối enum** (sau `Unpause`) để giá trị enum cũ không đổi.
+> Enum (16 loại): `SetAllowedPool` = 10, `Unpause` = 11, sau đó 3 loại đổi địa chỉ protocol và `ChangeStableToken` = 15. (2026-10-08: `SetAllowedPool` thay `SetAllowedFee` + `SetAllowedTickSpacing`; chưa deploy nên đổi enum được.)
 > Sweep nằm **trong** `ChangeStableToken` (không phải điều kiện "balance = 0" trước khi đổi) để không ai chặn được việc đổi bằng cách gửi 1 wei stable cũ / gọi `depositAndSupply`. Sau khi đổi, stable cũ chỉ là token chưa whitelist (bị bỏ qua như token rác).
 
 > **Không có proposal approve token tùy ý.** Mọi approve chỉ xảy ra atomic bên trong hàm swap/Morpho (approve đúng số → dùng → reset 0). Không tồn tại standing approval → hacker không thể "approve linh tinh".
@@ -244,8 +243,9 @@ mapping(address => bool) public isWithdrawAddress;
 
 // Whitelist
 mapping(address => bool) public allowedToken;   // token mua bán: WETH, cbBTC, (address(0) = ETH native). KHÔNG chứa stable
-mapping(uint24 => bool) public allowedFee;      // 100, 500, 3000, 10000 (V3 + V4)
-mapping(int24 => bool) public allowedTickSpacing; // V4: 10, 60, ...
+struct PoolConfig { address token; uint24 fee; int24 tickSpacing; } // tickSpacing 0 = V3, >= 1 = V4 hookless
+mapping(address => mapping(uint24 => mapping(int24 => bool))) public allowedPool; // [token][fee][tickSpacing]
+// Không có list on-chain (giới hạn size 24,576 B) — dựng lại list từ event PoolAllowed
 
 // Safety
 bool public paused;
@@ -258,19 +258,22 @@ mapping(uint256 => mapping(address => bool)) public hasApproved;
 uint256 public proposalCount;
 ```
 
-Constructor nhận: `stableToken, uniV3Router, permit2, universalRouter, morphoVault, signers[], operators[], withdrawAddresses[], tokens[], fees[], tickSpacings[]`. `tokens[]` là token mua bán, **không chứa stable** (`StableNotTradable`), có thể chứa `address(0)` (ETH native). Validate protocol/stable không `address(0)`, không trùng, signers ≥ 2 (deploy ban đầu tối thiểu 2 signer), signer ∩ operator = ∅. `morphoVault` không được validate on-chain (không check factory / `asset()`); deploy script vẫn pre-flight `asset() == stableToken` off-chain.
+Constructor nhận: `stableToken, uniV3Router, permit2, universalRouter, morphoVault, signers[], operators[], withdrawAddresses[], tokens[], pools[]` (`PoolConfig[]`). `tokens[]` là token mua bán, **không chứa stable** (`StableNotTradable`), có thể chứa `address(0)` (ETH native). Validate protocol/stable không `address(0)`, không trùng, signers ≥ 2 (deploy ban đầu tối thiểu 2 signer), signer ∩ operator = ∅. `morphoVault` không được validate on-chain (không check factory / `asset()`); deploy script vẫn pre-flight `asset() == stableToken` off-chain.
 
 ---
 
 ## 7. Giới hạn an toàn cho operator (đã chốt)
 
-**Chỉ dùng `allowedFee`.** Không làm giới hạn số lượng mỗi lệnh/mỗi ngày, không làm TWAP check.
+**Chỉ dùng whitelist pool `allowedPool`.** Không làm giới hạn số lượng mỗi lệnh/mỗi ngày, không làm TWAP check.
 
-- `allowedFee[fee]` — operator chỉ được swap qua các fee tier đã whitelist. Mặc định set ở constructor: `500` (0.05%) và `3000` (0.3%).
-- Bot tự chọn fee trong danh sách này.
-- Signers thêm/bớt fee tier qua proposal `SetAllowedFee`.
+- **1 item = 1 pool = `(token, fee, tickSpacing)`** (bên kia luôn là `stableToken`) (chốt 2026-10-08). `tickSpacing = 0` (`V3_POOL`) = pool V3 `(stable, token, fee)`; `tickSpacing >= 1` = pool V4 hookless `(stable, token, fee, tickSpacing)`. Signers nhập số dễ đọc, không cần tự tìm poolId / address pool — contract tự suy ra pool.
+- Lý do: 2 whitelist độc lập (fee, tickSpacing) cho phép operator ghép chéo (vd USDC/WETH `500/60`) thành pool không có thật; tạo pool V4 là permissionless → key operator bị lộ có thể tự tạo pool giá lệch, thanh khoản bụi, rồi swap toàn bộ vault vào với `minOut = 1` (rút cạn mà không cần vốn). Whitelist theo từng pool chặn đường này.
+- Pool của token này không mở pool cùng fee/tickSpacing của token khác; entry V4 không mở pool V3 cùng fee (và ngược lại). Swap V4 với `tickSpacing = 0` luôn revert.
+- **Chỉ whitelist pool đã tồn tại và có thanh khoản** (pool chưa tồn tại thì ai cũng tạo được). Deploy script check pool V3 tồn tại qua `UNI_V3_FACTORY.getPool`; pool V4 phải check trên fork.
+- Mặc định deploy: V3 USDC/WETH 500, V3 USDC/cbBTC 500, V4 USDC/WETH 500/10 và 3000/60, V4 USDC/cbBTC 500/10. ETH native: thêm `(address(0), 500, 10)` cùng `AddToken(address(0))`.
+- Bot tự chọn pool trong danh sách này.
+- Signers thêm/bớt pool qua proposal `SetAllowedPool`.
 - Slippage do bot off-chain kiểm soát qua `amountOutMinimum` (contract chỉ check `> 0`).
-- **V4 thêm `allowedTickSpacing[tickSpacing]`** (chốt 2026-10-08): ở V4 tick spacing chọn tự do theo pool (không cố định theo fee như V3). Set ở constructor (deploy mặc định `10, 60` — ứng với fee 500 / 3000 trên Base), signers thêm/bớt qua proposal `SetAllowedTickSpacing`. Whitelist global, độc lập với `allowedFee`.
 
 ---
 
@@ -295,7 +298,7 @@ Permit2Changed(address oldPermit2, address newPermit2)
 UniversalRouterChanged(address oldRouter, address newRouter)
 StableTokenChanged(address oldStable, address newStable, address oldMorphoVault, address newMorphoVault, uint256 sweptAmount)
 TokenAllowed(address token, bool allowed)
-FeeAllowed(uint24 fee, bool allowed)
+PoolAllowed(address token, uint24 fee, int24 tickSpacing, bool allowed)
 Paused(address indexed by)
 Unpaused()
 ```
@@ -369,12 +372,12 @@ Chạy test fork: `forge test --fork-url $BASE_RPC_URL -vvv`
 3. `depositAndSupply`, `morphoDeposit`, `morphoWithdraw`
 4. `swapExactInputV3`, `withdrawAndSwapV3` (kèm auto-deposit khi bán ra USDC)
 5. `WithdrawBatch`, `ChangeMorphoVault` (có migrate)
-6. `allowedFee`, `pause()` (1 signer) + proposal `Unpause`
+6. Whitelist pool (`allowedPool`), `pause()` (1 signer) + proposal `Unpause`
 7. Toàn bộ test (unit + fork + security)
 8. Deploy script
 
 **Phase 2:** (làm sớm theo yêu cầu owner 2026-10-08 — đã xong)
-- `swapExactInputV4` qua UniversalRouter + Permit2, `allowedTickSpacing` + proposal `SetAllowedTickSpacing`
+- `swapExactInputV4` qua UniversalRouter + Permit2 (dùng chung whitelist pool `allowedPool` với V3)
 
 **Ngoài phạm vi file này:** bot service off-chain (check điều kiện DCA, tính `amountOutMinimum` bằng QuoterV2, ký tx bằng key operator). Sẽ có spec riêng.
 
@@ -424,7 +427,7 @@ Các quyết định chi tiết khi code, không đổi hành vi chính của sp
 
 Owner đã xem xét và **chọn giữ nguyên** theo spec. Ghi lại để audit / vận hành biết:
 
-1. **Operator bị hack có thể phá giá trị qua sandwich.** Contract chỉ check `amountOutMinimum > 0`. Kẻ có key operator có thể bơm giá pool rồi gọi `withdrawAndSwapV3(toàn bộ USDC, minOut = 1)` (hoặc bán toàn bộ WETH/cbBTC) và back-run → token không "rời" contract trực tiếp nhưng gần như toàn bộ giá trị bị lấy. `allowedFee` / `allowedTickSpacing` là global, không theo cặp → operator có thể chọn pool mỏng (dễ thao túng hơn), cả V3 lẫn V4. Biện pháp hiện tại: signer `pause()` ngay khi phát hiện, giữ ít operator, monitor `Swapped` event. Phương án nếu cần sau: TWAP check on-chain hoặc cap theo ngày.
+1. **Operator bị hack có thể phá giá trị qua sandwich.** Contract chỉ check `amountOutMinimum > 0`. Kẻ có key operator có thể bơm giá một pool **đã whitelist** rồi gọi `withdrawAndSwapV3(toàn bộ USDC, minOut = 1)` (hoặc bán toàn bộ WETH/cbBTC) và back-run → token không "rời" contract trực tiếp nhưng phần lớn giá trị bị lấy. Cần vốn thật để đẩy giá pool sâu. Biến thể rẻ hơn (tự tạo pool rồi route vào) đã bị chặn bởi whitelist theo từng pool (§7, 2026-10-08) — với điều kiện signers chỉ whitelist pool có thật, có thanh khoản. Biện pháp hiện tại: signer `pause()` ngay khi phát hiện, giữ ít operator, monitor `Swapped` event. Phương án nếu cần sau: TWAP check on-chain hoặc cap theo ngày.
 2. **`ChangeMorphoVault` all-or-nothing.** Nếu vault cũ pause / thiếu thanh khoản / bị hack, `redeem` toàn bộ revert → không đổi vault được; `depositAndSupply` và lệnh bán vẫn đẩy USDC vào vault cũ. Biện pháp: signer `pause()` để chặn bán ra USDC; chờ vault cũ có thanh khoản.
 3. **2 signer → threshold 1.** Một signer bị lộ key là tự mình làm được mọi thứ (AddWithdrawAddress + WithdrawBatch, AddSigner, ChangeUniV3Router sang router độc…). Khuyến nghị deploy ≥ 3 signer (threshold 2).
 4. **Proposal `Unpause` cũ còn hạn** (tạo trong lần pause trước) vẫn approve được trong lần pause sau. Signers nên `cancel` / `reject` các proposal `Unpause` thừa.

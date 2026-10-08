@@ -21,7 +21,7 @@ import {DCAVaultProposals} from "./vault/DCAVaultProposals.sol";
 ///      - never touches a token other than `stableToken` / `allowedToken` (junk tokens are ignored, no rescue)
 ///      Code is split into modules (all compiled into this one immutable contract — no proxy):
 ///      - DCAVaultStorage   : types, constants, immutables, state, events, errors, modifiers
-///      - DCAVaultRoles     : signers / operators / withdraw addresses / token / fee / tick-spacing whitelists
+///      - DCAVaultRoles     : signers / operators / withdraw addresses / token & pool whitelists
 ///      - DCAVaultMorpho    : depositAndSupply, morphoDeposit / morphoWithdraw, vault migration
 ///      - DCAVaultSwap      : checks + settlement shared by V3 and V4 swaps
 ///      - DCAVaultSwapV3    : swapExactInputV3, withdrawAndSwapV3 (SwapRouter02)
@@ -37,8 +37,8 @@ contract DCAVault is DCAVaultSwapV3, DCAVaultSwapV4, DCAVaultProposals {
     /// @param _operators initial operators (may be empty), disjoint from `_signers`
     /// @param _withdrawAddresses initial withdraw whitelist
     /// @param _tokens initial tradable-token whitelist (e.g. WETH, cbBTC; address(0) = native ETH for V4)
-    /// @param _fees initial Uniswap fee tiers (spec default: 500, 3000), shared by V3 and V4
-    /// @param _tickSpacings initial Uniswap V4 tick spacings (e.g. 10 for fee 500, 60 for fee 3000)
+    /// @param _pools initial pool whitelist, one (token, fee, tickSpacing) entry per pool;
+    ///        tickSpacing `V3_POOL` (0) = V3 pool, >= 1 = hookless V4 pool (e.g. (WETH, 500, 0), (WETH, 500, 10))
     constructor(
         address _stableToken,
         address _uniV3Router,
@@ -49,8 +49,7 @@ contract DCAVault is DCAVaultSwapV3, DCAVaultSwapV4, DCAVaultProposals {
         address[] memory _operators,
         address[] memory _withdrawAddresses,
         address[] memory _tokens,
-        uint24[] memory _fees,
-        int24[] memory _tickSpacings
+        PoolConfig[] memory _pools
     ) DCAVaultStorage(_stableToken, _uniV3Router, _permit2, _universalRouter, _morphoVault) {
         if (_signers.length < MIN_SIGNERS) revert TooFewSigners();
 
@@ -67,13 +66,8 @@ contract DCAVault is DCAVaultSwapV3, DCAVaultSwapV4, DCAVaultProposals {
         for (uint256 i; i < _tokens.length; ++i) {
             _addToken(_tokens[i]); // reverts if a token is the stable (lists stay disjoint)
         }
-        for (uint256 i; i < _fees.length; ++i) {
-            if (allowedFee[_fees[i]]) revert Duplicate();
-            _setAllowedFee(_fees[i], true);
-        }
-        for (uint256 i; i < _tickSpacings.length; ++i) {
-            if (allowedTickSpacing[_tickSpacings[i]]) revert Duplicate();
-            _setAllowedTickSpacing(_tickSpacings[i], true);
+        for (uint256 i; i < _pools.length; ++i) {
+            _setAllowedPool(_pools[i].token, _pools[i].fee, _pools[i].tickSpacing, true); // reverts on duplicate
         }
     }
 }

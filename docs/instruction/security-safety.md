@@ -72,13 +72,14 @@ All in `test/DCAVault.security.t.sol`:
 | — | Reentrancy | `test_Security_ReentrancyBlocked` |
 | — | One signer cannot cancel others' proposals | `test_Security_SingleSignerCannotCancelOthers` |
 | — | Swap needs a stable side | `testFuzz_Security_SwapNeedsUsdcSide` |
+| — | Only listed (token, fee, tickSpacing) pools are reachable | `testFuzz_Security_UnlistedPoolAlwaysRejected`, `test_Fork_Revert_SwapExactInputV4_UnlistedPoolCombo` |
 | — | Protocol addresses change only at threshold | `test_Security_ChangeProtocolAddressesNeedThreshold`, `test_Security_ChangeMorphoVaultNeedsThreshold` |
 | — | Old router keeps no allowance after a switch | `test_Security_OldRouterHasNoPowerAfterChange` |
 | — | Every signer function checks the role (incl. `reject`, `cancel`, `pause`) | `test_Invariant1_OperatorCannotUseSignerFunctions`, `test_Revert_Cancel_ProposerNoLongerSigner` |
 
 ## 5. Accepted risks
 Found in the 2026-10-08 security review; the owner chose to keep the spec behavior. Full list: `DCA_VAULT_SPEC.md` §16.
-1. **Operator sandwich.** The contract only checks `amountOutMinimum > 0`. A stolen operator key can move the pool price, then call `withdrawAndSwapV3(all stable, minOut = 1)` / `swapExactInputV4(…, minOut = 1)` (or sell all WETH / cbBTC) and back-run — tokens never leave directly, but most of the value does. `allowedFee` (and `allowedTickSpacing` for V4) are global, so the operator may pick a thinner pool. Mitigation today: any signer `pause()`s on the first suspicious `Swapped` event; keep few operators; monitor.
+1. **Operator sandwich.** The contract only checks `amountOutMinimum > 0`. A stolen operator key can move the price of a **listed** pool, then call `withdrawAndSwapV3(all stable, minOut = 1)` / `swapExactInputV4(…, minOut = 1)` (or sell all WETH / cbBTC) and back-run — tokens never leave directly, but much of the value can. This needs real capital against a deep pool. The cheaper variant — routing into an unlisted, attacker-created pool — is blocked by the per-pool whitelist ([swap-v3 §3](swap-v3.md#3-pool-whitelist-allowedpool--shared-with-v4)), provided signers only list pools that exist with liquidity. Mitigation today: any signer `pause()`s on the first suspicious `Swapped` event; keep few operators; monitor.
 2. **`ChangeMorphoVault` is all-or-nothing.** A paused / illiquid / broken old vault makes the full `redeem` revert, so the vault cannot be switched; deposits and sell proceeds keep flowing into it. Mitigation: `pause()` to stop sells.
 3. **2 signers ⇒ threshold 1.** One leaked signer key alone can whitelist an address and withdraw everything, add signers, or switch the router. Deploy with ≥ 3 signers.
 4. **Stale `Unpause` proposals** from an earlier pause stay approvable for 7 days. Cancel / reject leftovers.

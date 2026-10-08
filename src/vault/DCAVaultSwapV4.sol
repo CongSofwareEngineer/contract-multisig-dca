@@ -46,8 +46,8 @@ abstract contract DCAVaultSwapV4 is DCAVaultSwap {
     ///      TAKE_ALL pays the UniversalRouter's caller, i.e. always this vault.
     /// @param tokenIn token to sell (`stableToken` for a buy; address(0) = native ETH)
     /// @param tokenOut token to buy (`stableToken` for a sell; address(0) = native ETH)
-    /// @param fee whitelisted pool fee (same `allowedFee` list as V3)
-    /// @param tickSpacing whitelisted V4 tick spacing of the pool (`allowedTickSpacing`)
+    /// @param fee pool fee
+    /// @param tickSpacing V4 tick spacing (>= 1); (token, fee, tickSpacing) must be in `allowedPool`
     /// @param amountIn exact amount of `tokenIn` to sell (<= uint128 max)
     /// @param amountOutMinimum minimum output (> 0, <= uint128 max); computed off-chain by the bot
     /// @param deadline unix timestamp after which the swap reverts
@@ -61,8 +61,9 @@ abstract contract DCAVaultSwapV4 is DCAVaultSwap {
         uint256 amountOutMinimum,
         uint256 deadline
     ) external onlyOperator whenNotPaused nonReentrant returns (uint256 amountOut) {
-        _checkSwap(tokenIn, tokenOut, fee, amountIn, amountOutMinimum, deadline);
-        if (!allowedTickSpacing[tickSpacing]) revert TickSpacingNotAllowed();
+        // tickSpacing 0 is the V3 marker in `allowedPool` — never let it unlock a V4 swap.
+        if (tickSpacing < MIN_TICK_SPACING) revert PoolNotAllowed();
+        _checkSwap(tokenIn, tokenOut, fee, tickSpacing, amountIn, amountOutMinimum, deadline);
         // V4 router params are uint128; reject instead of silently truncating.
         if (amountIn > type(uint128).max || amountOutMinimum > type(uint128).max) revert AmountTooLarge();
 

@@ -11,17 +11,18 @@ Sub-logics:
 5. Source layout
 
 ## 1. Constructor
-`DCAVault(stableToken, uniV3Router, permit2, universalRouter, morphoVault, signers[], operators[], withdrawAddresses[], tokens[], fees[], tickSpacings[])`
-Validates: stable and all protocol addresses non-zero (`morphoVault` is **not** checked further on-chain — the deploy script pre-flights `asset() == stableToken`); signers ≥ 2, non-zero, unique; operators non-zero, unique, not signers; withdraw addresses non-zero, unique; `tokens[]` = **tradable tokens only**: unique, must **not** contain the stable (`StableNotTradable`), may contain `address(0)` (native ETH, V4 only); fees > 0, unique; tick spacings in `1..32767`, unique (used by V4 swaps).
+`DCAVault(stableToken, uniV3Router, permit2, universalRouter, morphoVault, signers[], operators[], withdrawAddresses[], tokens[], pools[])`
+Validates: stable and all protocol addresses non-zero (`morphoVault` is **not** checked further on-chain — the deploy script pre-flights `asset() == stableToken`); signers ≥ 2, non-zero, unique; operators non-zero, unique, not signers; withdraw addresses non-zero, unique; `tokens[]` = **tradable tokens only**: unique, must **not** contain the stable (`StableNotTradable`), may contain `address(0)` (native ETH, V4 only); `pools[]` = `PoolConfig{token, fee, tickSpacing}` entries, unique, validated as in [swap-v3 §3](swap-v3.md#3-pool-whitelist-allowedpool--shared-with-v4) (tickSpacing 0 = V3 pool, ≥ 1 = hookless V4 pool).
 No protocol address is hardcoded in the contract.
 
 ## 2. Deploy script
 `script/Deploy.s.sol` reads everything from env (template: `.env.example`):
-`STABLE_TOKEN, TOKENS, UNI_V3_ROUTER, PERMIT2, UNIVERSAL_ROUTER, MORPHO_VAULT, SIGNERS, OPERATORS, WITHDRAW_ADDRESSES, FEES, TICK_SPACINGS, PRIVATE_KEY_DEPLOYER`.
+`STABLE_TOKEN, TOKENS, UNI_V3_ROUTER, PERMIT2, UNIVERSAL_ROUTER, MORPHO_VAULT, SIGNERS, OPERATORS, WITHDRAW_ADDRESSES, UNI_V3_FACTORY, POOL_TOKENS, POOL_FEES, POOL_TICK_SPACINGS, PRIVATE_KEY_DEPLOYER`.
 `STABLE_TOKEN` = USDC. `TOKENS` = tradable tokens (default `WETH,cbBTC`); append `0x0000000000000000000000000000000000000000` to also whitelist native ETH.
-`TICK_SPACINGS` is required (default `10,60`, matching fee `500` → 10 and `3000` → 60 on the Base V4 pools).
+Pool whitelist = three parallel lists, entry i = (`POOL_TOKENS[i]`, `POOL_FEES[i]`, `POOL_TICK_SPACINGS[i]`), tick spacing 0 = V3. Default: V3 USDC/WETH 500, V3 USDC/cbBTC 500, V4 USDC/WETH 500/10 and 3000/60, V4 USDC/cbBTC 500/10. Only list pools that exist with liquidity.
 Lists are comma-separated without spaces. `OPERATORS` may be empty; `WITHDRAW_ADDRESSES` must not be.
-Pre-flight: requires chainId 8453, code at every address (except `address(0)` in `TOKENS`), `STABLE_TOKEN` not in `TOKENS`, Morpho asset == `STABLE_TOKEN`; prints the full config.
+Contract runtime size: 24,238 B (338 B under the EIP-170 limit of 24,576 B) — any new logic must be size-checked (`forge build --sizes`).
+Pre-flight: requires chainId 8453, code at every address (except `address(0)` in `TOKENS`), `STABLE_TOKEN` not in `TOKENS`, Morpho asset == `STABLE_TOKEN`, `POOL_*` lists of equal length, every V3 pool entry exists (`UNI_V3_FACTORY.getPool(stable, token, fee) != 0`); prints the full config. V4 pool entries are not checked by the script — verify them on a fork first.
 ```bash
 cp .env.example .env   # fill in, never commit
 source .env

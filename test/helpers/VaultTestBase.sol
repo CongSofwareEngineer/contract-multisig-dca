@@ -73,28 +73,41 @@ abstract contract VaultTestBase is Test {
         address[] memory tokens = new address[](2);
         tokens[0] = address(weth);
         tokens[1] = address(cbbtc);
-        uint24[] memory fees = new uint24[](2);
-        fees[0] = FEE_LOW;
-        fees[1] = FEE_MED;
         return new DCAVault(
-            address(usdc),
-            address(router),
-            permit2,
-            universalRouter,
-            address(morpho),
-            s,
-            o,
-            w,
-            tokens,
-            fees,
-            _tickSpacings()
+            address(usdc), address(router), permit2, universalRouter, address(morpho), s, o, w, tokens, _pools()
         );
     }
 
-    function _tickSpacings() internal pure returns (int24[] memory ts) {
-        ts = new int24[](2);
-        ts[0] = TS_LOW;
-        ts[1] = TS_MED;
+    /// @dev Default pool whitelist: for WETH and cbBTC, V3 at 500 / 3000 and V4 at 500/10 and 3000/60, plus
+    ///      V4 native ETH 500/10 (inert until address(0) is added to `allowedToken`).
+    ///      The cross combos (500/60, 3000/10) are deliberately NOT allowed.
+    function _pools() internal view returns (DCAVaultStorage.PoolConfig[] memory p) {
+        p = new DCAVaultStorage.PoolConfig[](9);
+        address[2] memory toks = [address(weth), address(cbbtc)];
+        for (uint256 i; i < 2; ++i) {
+            p[i * 4] = _pool(toks[i], FEE_LOW, 0);
+            p[i * 4 + 1] = _pool(toks[i], FEE_MED, 0);
+            p[i * 4 + 2] = _pool(toks[i], FEE_LOW, TS_LOW);
+            p[i * 4 + 3] = _pool(toks[i], FEE_MED, TS_MED);
+        }
+        p[8] = _pool(address(0), FEE_LOW, TS_LOW);
+    }
+
+    function _pool(address token, uint24 fee, int24 tickSpacing)
+        internal
+        pure
+        returns (DCAVaultStorage.PoolConfig memory)
+    {
+        return DCAVaultStorage.PoolConfig(token, fee, tickSpacing);
+    }
+
+    function _pools1(address token, uint24 fee, int24 tickSpacing)
+        internal
+        pure
+        returns (DCAVaultStorage.PoolConfig[] memory p)
+    {
+        p = new DCAVaultStorage.PoolConfig[](1);
+        p[0] = _pool(token, fee, tickSpacing);
     }
 
     function _newMorphoVault(MockERC20 asset) internal returns (MockMorphoVault v) {

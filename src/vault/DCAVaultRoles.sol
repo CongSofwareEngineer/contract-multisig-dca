@@ -4,7 +4,7 @@ pragma solidity ^0.8.24;
 import {DCAVaultStorage} from "./DCAVaultStorage.sol";
 
 /// @title DCAVaultRoles
-/// @notice Signers, operators, withdraw addresses, token / fee / tick-spacing whitelists and `getThreshold()`.
+/// @notice Signers, operators, withdraw addresses, token / pool whitelists and `getThreshold()`.
 /// @dev Internal setters are called from the constructor and from proposal execution only.
 ///      signer ∩ operator = ∅ is enforced here, so every path that adds a role goes through it.
 abstract contract DCAVaultRoles is DCAVaultStorage {
@@ -92,16 +92,29 @@ abstract contract DCAVaultRoles is DCAVaultStorage {
         emit TokenAllowed(token, false);
     }
 
-    function _setAllowedFee(uint24 fee, bool allowed) internal {
-        if (fee == 0) revert InvalidFee();
-        allowedFee[fee] = allowed;
-        emit FeeAllowed(fee, allowed);
+    /// @dev Adds or removes one (token, fee, tickSpacing) pool entry. Adding does not require the token to be
+    ///      in `allowedToken` yet (swaps check both), so AddToken and SetAllowedPool can be proposed in parallel.
+    function _setAllowedPool(address token, uint24 fee, int24 tickSpacing, bool allowed) internal {
+        if (allowed) {
+            _checkPoolConfig(token, fee, tickSpacing);
+            if (allowedPool[token][fee][tickSpacing]) revert Duplicate();
+            allowedPool[token][fee][tickSpacing] = true;
+        } else {
+            if (!allowedPool[token][fee][tickSpacing]) revert NotFound();
+            allowedPool[token][fee][tickSpacing] = false;
+        }
+        emit PoolAllowed(token, fee, tickSpacing, allowed);
     }
 
-    function _setAllowedTickSpacing(int24 tickSpacing, bool allowed) internal {
-        if (tickSpacing < MIN_TICK_SPACING || tickSpacing > MAX_TICK_SPACING) revert InvalidTickSpacing();
-        allowedTickSpacing[tickSpacing] = allowed;
-        emit TickSpacingAllowed(tickSpacing, allowed);
+    /// @dev Static checks for a new pool entry (also run at propose time).
+    function _checkPoolConfig(address token, uint24 fee, int24 tickSpacing) internal view {
+        // Every pool is stable <-> token, so the stable itself can never be the `token` side.
+        if (token == stableToken) revert StableNotTradable();
+        if (fee == 0 || fee > MAX_POOL_FEE) revert InvalidFee();
+        // V3_POOL (0) or a valid V4 tick spacing [1, 32767].
+        if (tickSpacing < V3_POOL || tickSpacing > MAX_TICK_SPACING) revert InvalidTickSpacing();
+        // SwapRouter02 cannot trade native ETH, so a V3 entry for it would be dead (and misleading).
+        if (tickSpacing == V3_POOL && token == NATIVE) revert NativeNotSupported();
     }
 
     // ------------------------------------------------------------------

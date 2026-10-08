@@ -23,14 +23,22 @@ abstract contract DCAVaultStorage is ReentrancyGuard {
         ChangeMorphoVault,
         AddToken,
         RemoveToken,
-        SetAllowedFee,
+        SetAllowedPool,
         Unpause,
         // Appended (not inserted) so existing enum values stay stable for off-chain tooling.
         ChangeUniV3Router,
         ChangePermit2,
         ChangeUniversalRouter,
-        SetAllowedTickSpacing,
         ChangeStableToken
+    }
+
+    /// @notice One whitelisted pool: the stable paired with `token`. `tickSpacing == V3_POOL` (0) means the
+    ///         Uniswap V3 pool (stable, token, fee); `tickSpacing >= 1` means the hookless V4 pool
+    ///         (stable, token, fee, tickSpacing).
+    struct PoolConfig {
+        address token;
+        uint24 fee;
+        int24 tickSpacing;
     }
 
     struct Proposal {
@@ -57,6 +65,12 @@ abstract contract DCAVaultStorage is ReentrancyGuard {
     /// @notice Uniswap V4 tick spacing bounds (v4-core TickMath.MIN/MAX_TICK_SPACING).
     int24 public constant MIN_TICK_SPACING = 1;
     int24 public constant MAX_TICK_SPACING = type(int16).max;
+    /// @notice `PoolConfig.tickSpacing` value that marks a Uniswap V3 pool (V3 has no tick-spacing parameter;
+    ///         V4 tick spacing is always >= 1, so 0 can never collide with a V4 pool).
+    int24 public constant V3_POOL = 0;
+    /// @notice Highest pool fee accepted (v4-core LPFeeLibrary.MAX_LP_FEE = 100%). Also rules out the V4
+    ///         dynamic-fee flag (0x800000), which only hooked pools can use anyway.
+    uint24 public constant MAX_POOL_FEE = 1_000_000;
     /// @notice Uniswap V4 currency id for native ETH. Whitelisting it in `allowedToken` enables native-ETH
     ///         V4 pools; V3 (SwapRouter02) cannot trade it.
     address public constant NATIVE = address(0);
@@ -90,10 +104,12 @@ abstract contract DCAVaultStorage is ReentrancyGuard {
     /// @dev Mirror of `allowedToken` so views can list whitelisted balances without ever
     ///      touching a non-whitelisted (possibly malicious) token.
     address[] internal _allowedTokenList;
-    mapping(uint24 => bool) public allowedFee;
-    /// @notice V4 tick spacings the operator may use. Together with `allowedFee` and `hooks = address(0)`
-    ///         this bounds which V4 pools a swap can route through.
-    mapping(int24 => bool) public allowedTickSpacing;
+    /// @notice Pools the operator may swap through: `allowedPool[token][fee][tickSpacing]`
+    ///         (`tickSpacing == V3_POOL` = V3 pool, otherwise hookless V4 pool). The token, fee and tick spacing
+    ///         are whitelisted together as one entry, so the operator can never combine them into a pool the
+    ///         signers did not pick — e.g. a fresh, attacker-seeded pool with an unused fee / spacing combo.
+    /// @dev No on-chain list (contract size limit): the full set is rebuilt off-chain from `PoolAllowed` events.
+    mapping(address => mapping(uint24 => mapping(int24 => bool))) public allowedPool;
 
     bool public paused;
     /// @dev True only while `swapExactInputV4` is waiting for native ETH output; `receive()` rejects ETH
@@ -141,8 +157,7 @@ abstract contract DCAVaultStorage is ReentrancyGuard {
         address oldStable, address newStable, address oldMorphoVault, address newMorphoVault, uint256 sweptAmount
     );
     event TokenAllowed(address token, bool allowed);
-    event FeeAllowed(uint24 fee, bool allowed);
-    event TickSpacingAllowed(int24 tickSpacing, bool allowed);
+    event PoolAllowed(address token, uint24 fee, int24 tickSpacing, bool allowed);
     event Paused(address indexed by);
     event Unpaused();
 
@@ -167,9 +182,8 @@ abstract contract DCAVaultStorage is ReentrancyGuard {
     error NativeNotSupported();
     error NativeTransferFailed();
     error UnexpectedNative();
-    error FeeNotAllowed();
+    error PoolNotAllowed();
     error InvalidFee();
-    error TickSpacingNotAllowed();
     error InvalidTickSpacing();
     error AmountTooLarge();
     error ExcessiveInput();

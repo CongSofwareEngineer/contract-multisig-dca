@@ -82,25 +82,17 @@ contract DCAVaultForkTest is Test {
         address[] memory tokens = new address[](2);
         tokens[0] = WETH;
         tokens[1] = CBBTC;
-        uint24[] memory fees = new uint24[](2);
-        fees[0] = 500;
-        fees[1] = 3000;
-        int24[] memory tickSpacings = new int24[](2);
-        tickSpacings[0] = 10;
-        tickSpacings[1] = 60;
+        // Only pools that exist with liquidity on Base (same list as .env.example) + native ETH 500/10.
+        DCAVaultStorage.PoolConfig[] memory pools = new DCAVaultStorage.PoolConfig[](6);
+        pools[0] = DCAVaultStorage.PoolConfig(WETH, 500, 0);
+        pools[1] = DCAVaultStorage.PoolConfig(CBBTC, 500, 0);
+        pools[2] = DCAVaultStorage.PoolConfig(WETH, 500, 10);
+        pools[3] = DCAVaultStorage.PoolConfig(WETH, 3000, 60);
+        pools[4] = DCAVaultStorage.PoolConfig(CBBTC, 500, 10);
+        pools[5] = DCAVaultStorage.PoolConfig(address(0), 500, 10);
 
         vault = new DCAVault(
-            USDC,
-            ROUTER,
-            PERMIT2,
-            UNIVERSAL_ROUTER,
-            STEAKHOUSE_USDC,
-            signers,
-            operators,
-            withdraws,
-            tokens,
-            fees,
-            tickSpacings
+            USDC, ROUTER, PERMIT2, UNIVERSAL_ROUTER, STEAKHOUSE_USDC, signers, operators, withdraws, tokens, pools
         );
 
         deal(USDC, user, 10_000e6);
@@ -308,6 +300,22 @@ contract DCAVaultForkTest is Test {
         uint256 id = vault.proposeAddToken(address(0));
         vm.prank(signer2);
         vault.approve(id);
+    }
+
+    /// @dev The cross combos of whitelisted fees / spacings (e.g. USDC/WETH 500/60) are not real pools; anyone
+    ///      could initialize one at a rigged price. They must be rejected before any token moves.
+    function test_Fork_Revert_SwapExactInputV4_UnlistedPoolCombo() public {
+        vm.prank(operator);
+        vault.morphoWithdraw(1_000e6);
+        vm.startPrank(operator);
+        vm.expectRevert(DCAVaultStorage.PoolNotAllowed.selector);
+        vault.swapExactInputV4(USDC, WETH, 500, 60, 1_000e6, 1, block.timestamp);
+        vm.expectRevert(DCAVaultStorage.PoolNotAllowed.selector);
+        vault.swapExactInputV4(USDC, CBBTC, 3000, 60, 1_000e6, 1, block.timestamp); // not in the list
+        vm.expectRevert(DCAVaultStorage.PoolNotAllowed.selector);
+        vault.swapExactInputV3(USDC, WETH, 3000, 1_000e6, 1, block.timestamp); // V3 3000 not listed
+        vm.stopPrank();
+        assertEq(IERC20(USDC).balanceOf(address(vault)), 1_000e6);
     }
 
     function test_Fork_SwapExactInputV4_UsdcToNativeEth() public {

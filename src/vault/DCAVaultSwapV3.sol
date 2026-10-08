@@ -21,7 +21,7 @@ abstract contract DCAVaultSwapV3 is DCAVaultSwap {
     ///         output is supplied to Morpho. Native ETH (address(0)) is not supported on V3 — use WETH or V4.
     /// @param tokenIn token to sell (`stableToken` for a buy)
     /// @param tokenOut token to buy (`stableToken` for a sell)
-    /// @param fee whitelisted Uniswap V3 fee tier
+    /// @param fee Uniswap V3 fee tier; (token, fee, V3_POOL) must be in `allowedPool`
     /// @param amountIn exact amount of `tokenIn` to sell
     /// @param amountOutMinimum minimum output (> 0); slippage is computed off-chain by the bot
     /// @param deadline unix timestamp after which the swap reverts
@@ -40,7 +40,7 @@ abstract contract DCAVaultSwapV3 is DCAVaultSwap {
     /// @notice Buy order: withdraws exactly `stableAmount` from Morpho, then swaps stable -> `tokenOut`.
     ///         If the swap fails the whole tx reverts and the stable stays in Morpho.
     /// @param tokenOut whitelisted tradable token to buy (not the stable, not native ETH)
-    /// @param fee whitelisted Uniswap V3 fee tier
+    /// @param fee Uniswap V3 fee tier; (tokenOut, fee, V3_POOL) must be in `allowedPool`
     /// @param stableAmount exact stable amount to withdraw and sell
     /// @param amountOutMinimum minimum output (> 0)
     /// @param deadline unix timestamp after which the swap reverts
@@ -57,6 +57,7 @@ abstract contract DCAVaultSwapV3 is DCAVaultSwap {
         // Validate cheap swap params before touching Morpho (same checks are repeated in _swapV3).
         if (tokenOut == NATIVE) revert NativeNotSupported();
         if (!allowedToken[tokenOut]) revert TokenNotAllowed(); // also rejects tokenOut == stable
+        if (!allowedPool[tokenOut][fee][V3_POOL]) revert PoolNotAllowed();
         uint256 shares = _withdrawFromMorpho(stableAmount);
         emit MorphoWithdrawn(stableAmount, shares);
         amountOut = _swapV3(stable, tokenOut, fee, stableAmount, amountOutMinimum, deadline);
@@ -74,9 +75,9 @@ abstract contract DCAVaultSwapV3 is DCAVaultSwap {
         uint256 amountOutMinimum,
         uint256 deadline
     ) internal returns (uint256 amountOut) {
-        _checkSwap(tokenIn, tokenOut, fee, amountIn, amountOutMinimum, deadline);
         // SwapRouter02 only trades ERC20s; native ETH must go through WETH or V4.
         if (tokenIn == NATIVE || tokenOut == NATIVE) revert NativeNotSupported();
+        _checkSwap(tokenIn, tokenOut, fee, V3_POOL, amountIn, amountOutMinimum, deadline);
         if (amountIn > IERC20(tokenIn).balanceOf(address(this))) revert InsufficientBalance();
 
         uint256 outBefore = IERC20(tokenOut).balanceOf(address(this));

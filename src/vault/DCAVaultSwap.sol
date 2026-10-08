@@ -7,17 +7,18 @@ import {DCAVaultMorpho} from "./DCAVaultMorpho.sol";
 /// @title DCAVaultSwap
 /// @notice Shared base of the swap modules: the checks every swap must pass and the post-swap settlement.
 /// @dev `DCAVaultSwapV3` and `DCAVaultSwapV4` both build on this, so V3 and V4 can never drift apart on the
-///      rules (stable side, token whitelist, fee, deadline, balance-delta output check, sell -> Morpho).
+///      rules (stable side, token whitelist, pool whitelist, deadline, balance-delta output check, sell -> Morpho).
 abstract contract DCAVaultSwap is DCAVaultMorpho {
     // ------------------------------------------------------------------
     // Internal
     // ------------------------------------------------------------------
 
-    /// @dev Checks shared by V3 and V4 swaps.
+    /// @dev Checks shared by V3 and V4 swaps. `tickSpacing` is `V3_POOL` for V3, the V4 pool's spacing for V4.
     function _checkSwap(
         address tokenIn,
         address tokenOut,
         uint24 fee,
+        int24 tickSpacing,
         uint256 amountIn,
         uint256 amountOutMinimum,
         uint256 deadline
@@ -33,7 +34,9 @@ abstract contract DCAVaultSwap is DCAVaultMorpho {
         if (amountIn == 0 || amountOutMinimum == 0) revert ZeroAmount();
         // SwapRouter02 on Base has no deadline field, so enforce it here (V4 also passes it to the router).
         if (block.timestamp > deadline) revert DeadlinePassed();
-        if (!allowedFee[fee]) revert FeeNotAllowed();
+        // The exact pool (stable, other, fee, tickSpacing) must be whitelisted as one entry: the operator cannot
+        // pick an unused fee / spacing combo where it could seed its own pool at a rigged price.
+        if (!allowedPool[other][fee][tickSpacing]) revert PoolNotAllowed();
     }
 
     /// @dev Measures what actually arrived (never trusts the router's return value), emits `Swapped`,
