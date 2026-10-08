@@ -56,9 +56,9 @@ Spec §13: verify on basescan → check `getSigners()`, operators, withdraw addr
 ### Files
 | File | Contents |
 |---|---|
-| `src/DCAVault.sol` | Final contract: constructor seeds signers / operators / withdraw addresses / tokens / fees / tick spacings. |
+| `src/DCAVault.sol` | Final contract: constructor seeds signers / operators / withdraw addresses / tokens / pools (`PoolConfig[]`). |
 | `src/vault/DCAVaultStorage.sol` | Types, constants (incl. `NATIVE = address(0)`), **all** state (incl. `stableToken`, `morphoVault`, `uniV3Router`, `permit2`, `universalRouter`, changeable only by proposal), events, errors, modifiers; base constructor sets stable + protocol addresses (non-zero check only). |
-| `src/vault/DCAVaultRoles.sol` | Role / whitelist setters, `getSigners`, `getAllowedTokens`, `getThreshold`. |
+| `src/vault/DCAVaultRoles.sol` | Role / whitelist setters, `getSigners`, `getAllowedTokens`, `allowedPool`, `getThreshold`. |
 | `src/vault/DCAVaultMorpho.sol` | Morpho deposit / withdraw / migration, `ChangeStableToken`, `totalStable`, `getBalances`, native-aware `_balanceOf` / `_sendToken`. |
 | `src/vault/DCAVaultSwap.sol` | Base of the swap modules: `_prepareSwap` (shared rules + Morpho pull on a buy) + `_settleSwap` (balance-delta output, `Swapped`, sell → Morpho). |
 | `src/vault/DCAVaultSwapV3.sol` | V3 swaps via SwapRouter02: `swapExactInputV3` (buy and sell). |

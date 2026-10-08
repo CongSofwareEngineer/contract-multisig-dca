@@ -226,8 +226,18 @@ Thay thế cho mô hình EOA hiện tại (approve unlimited cho Uniswap V3 Rout
 ## 6. State
 
 ```solidity
+// Constants
+uint256 public constant MIN_SIGNERS = 2;          // signers.length không bao giờ < 2
+uint256 public constant PROPOSAL_TTL = 7 days;    // cửa sổ approve / execute
+uint8   public constant SWAP_VERSION_V3 = 3;      // field `version` của event Swapped
+uint8   public constant SWAP_VERSION_V4 = 4;
+int24   public constant V3_POOL = 0;              // PoolConfig.tickSpacing = 0 -> pool V3
+int24   public constant MIN_TICK_SPACING = 1;     // tick spacing V4 hợp lệ: [1, 32767]
+int24   public constant MAX_TICK_SPACING = type(int16).max;
+uint24  public constant MAX_POOL_FEE = 1_000_000; // v4-core LPFeeLibrary.MAX_LP_FEE (100%)
+address public constant NATIVE = address(0);      // ETH native (V4 currency id)
+
 // Tokens & protocols
-address public constant NATIVE = address(0); // ETH native (V4 currency id)
 address public stableToken;                // stable duy nhất, signers đổi được (ChangeStableToken, rút sạch trước)
 address public morphoVault;                // signers đổi được (ChangeMorphoVault / ChangeStableToken)
 address public uniV3Router;                // signers đổi được (ChangeUniV3Router)
@@ -242,6 +252,8 @@ mapping(address => bool) public isWithdrawAddress;
 
 // Whitelist
 mapping(address => bool) public allowedToken;   // token mua bán: WETH, cbBTC, (address(0) = ETH native). KHÔNG chứa stable
+address[] internal _allowedTokenList;           // mirror của allowedToken cho getAllowedTokens() / getBalances();
+                                                // nhờ nó view không bao giờ chạm token ngoài whitelist (bất biến #12)
 struct PoolConfig { address token; uint24 fee; int24 tickSpacing; } // tickSpacing 0 = V3, >= 1 = V4 hookless
 mapping(address => mapping(address => mapping(uint24 => mapping(int24 => bool)))) internal _allowedPool; // [stable][token][fee][tickSpacing]; view allowedPool(token, fee, tickSpacing) đọc theo stable hiện tại
 // Không có list on-chain (giới hạn size 24,576 B) — dựng lại list từ event PoolAllowed
@@ -249,11 +261,14 @@ mapping(address => mapping(address => mapping(uint24 => mapping(int24 => bool)))
 // Safety
 bool public paused;
 bool internal _expectingNative;                 // chỉ true trong swap V4 mua ETH native -> receive() nhận
+uint64 public stableChangedAt;                  // timestamp lần ChangeStableToken gần nhất;
+                                                // proposal có createdAt <= giá trị này coi như expired (§5.3)
 
 // Proposals
 struct Proposal { ProposalType pType; bytes data; address proposer; uint64 createdAt; bool executed; bool cancelled; }
 mapping(uint256 => Proposal) public proposals;
 mapping(uint256 => mapping(address => bool)) public hasApproved;
+mapping(uint256 => mapping(address => bool)) public hasRejected; // mỗi signer vote 1 lần: approve HOẶC reject
 uint256 public proposalCount;
 ```
 
@@ -298,7 +313,7 @@ Permit2Changed(address oldPermit2, address newPermit2)
 UniversalRouterChanged(address oldRouter, address newRouter)
 StableTokenChanged(address oldStable, address newStable, address oldMorphoVault, address newMorphoVault, uint256 sweptAmount)
 TokenAllowed(address token, bool allowed)
-PoolAllowed(address token, uint24 fee, int24 tickSpacing, bool allowed)
+PoolAllowed(address stable, address token, uint24 fee, int24 tickSpacing, bool allowed)
 Paused(address indexed by)
 Unpaused()
 ```
@@ -309,6 +324,7 @@ Unpaused()
 - `totalStable()` = stable idle + `IERC4626(morphoVault).convertToAssets(shares)`
 - `getBalances()` → `(stableIdle, stableInMorpho, address[] tokens, uint256[] balances)` — stable báo riêng; `tokens` = token mua bán trong whitelist (WETH, cbBTC, …; `address(0)` → `address(this).balance`). Chỉ đọc token đã whitelist (bất biến #12).
 - `getAllowedTokens()` → danh sách token mua bán (không có stable)
+- `allowedPool(token, fee, tickSpacing)` → pool `(stableToken hiện tại, token, fee, tickSpacing)` có được swap không. Luôn đọc theo stable **hiện tại**: entry thêm dưới stable cũ không tính. Không có list on-chain — dựng lại từ event `PoolAllowed` (§7, §8)
 - `getProposal(id)` → type, data, số vote hợp lệ hiện tại, threshold, executed, cancelled, expired
 - `getRejections(id)` → số reject hợp lệ hiện tại
 
