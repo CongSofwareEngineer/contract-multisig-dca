@@ -57,7 +57,7 @@ QuoterV2, signing with the operator key). It gets its own spec.
 │   │   ├── DCAVaultRoles.sol    # signers / operators / withdraw addresses / token & fee whitelists
 │   │   ├── DCAVaultMorpho.sol   # depositAndSupply, morphoDeposit/Withdraw, ChangeMorphoVault migration
 │   │   ├── DCAVaultSwap.sol     # shared swap checks + settlement (base of V3 / V4)
-│   │   ├── DCAVaultSwapV3.sol   # swapExactInputV3, withdrawAndSwapV3
+│   │   ├── DCAVaultSwapV3.sol   # swapExactInputV3 (buy = Morpho withdraw + swap)
 │   │   ├── DCAVaultSwapV4.sol   # swapExactInputV4 (UniversalRouter + Permit2)
 │   │   └── DCAVaultProposals.sol # pause, propose/approve/cancel, execute, WithdrawBatch
 │   └── interfaces/
@@ -66,7 +66,7 @@ QuoterV2, signing with the operator key). It gets its own spec.
 │       └── IUniversalRouter.sol
 ├── test/
 │   ├── DCAVault.t.sol           # unit: roles, proposals, threshold, limits
-│   ├── DCAVault.fork.t.sol      # fork Base: deposit → Morpho, withdrawAndSwap,
+│   ├── DCAVault.fork.t.sol      # fork Base: deposit → Morpho, buy (Morpho → swap),
 │   │                            #   sell → Morpho, batch withdraw, change vault
 │   └── DCAVault.security.t.sol  # the §10 invariants + malicious-operator tests
 └── script/
@@ -150,7 +150,7 @@ Also:
   V4 pool. Never split it back into independent fee / tick-spacing lists (the operator could
   combine them into an attacker-created pool). No per-tx or per-day caps, no TWAP check.
   Slippage is the bot's job via `amountOutMinimum` (contract only checks `> 0`).
-- **Contract size is ~338 B under the EIP-170 limit** (24,576 B). Run `forge build --sizes`
+- **Contract size is ~784 B under the EIP-170 limit** (24,576 B). Run `forge build --sizes`
   after any change; deploy fails on mainnet if it goes over.
 - **Pool fee tiers in practice:** USDC/WETH → `500`, WETH/cbBTC → `3000`;
   verify USDC/cbBTC liquidity on a fork before using it.
@@ -201,7 +201,7 @@ Do not stack several unverified steps.
 1. Foundry setup + OpenZeppelin
 2. Roles + proposal system + `getThreshold()`
 3. `depositAndSupply`, `morphoDeposit`, `morphoWithdraw`
-4. `swapExactInputV3`, `withdrawAndSwapV3` (auto-deposit to Morpho when selling to USDC)
+4. `swapExactInputV3` (buy pulls exact USDC from Morpho; sell auto-deposits USDC to Morpho)
 5. `WithdrawBatch`, `ChangeMorphoVault` (with migration)
 6. Pool whitelist (`allowedPool`), `pause()` (single signer) + `Unpause` proposal
 7. Full test suite (unit + fork + security)
@@ -224,7 +224,7 @@ inside* that file. Expected set (~6 files):
 | `roles-multisig` | signers, operators, withdraw addresses, threshold |
 | `proposal-system` | propose / approve / execute / cancel, expiry, each ProposalType |
 | `morpho-integration` | `depositAndSupply`, `morphoDeposit`/`Withdraw`, `ChangeMorphoVault` migration |
-| `swap-v3` | `swapExactInputV3`, `withdrawAndSwapV3`, pool whitelist `allowedPool` (shared with V4), atomic approvals |
+| `swap-v3` | `swapExactInputV3` (buy = Morpho withdraw + swap), pool whitelist `allowedPool` (shared with V4), atomic approvals |
 | `swap-v4` | Phase 2: UniversalRouter + Permit2 |
 | `security-safety` | `pause`/`Unpause`, token whitelist, anti-junk-token, the §10 invariants |
 | `deployment` | constructor args, deploy script, verification, post-deploy checklist |

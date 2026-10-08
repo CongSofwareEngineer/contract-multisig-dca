@@ -113,10 +113,10 @@ contract DCAVaultForkTest is Test {
 
     // ------------------------------------------------------------------ buys
 
-    function test_Fork_WithdrawAndSwapV3_UsdcToWeth() public {
+    function test_Fork_SwapExactInputV3_BuyUsdcToWeth() public {
         uint256 minOut = _quote(USDC, WETH, 500, 1_000e6) * 995 / 1000; // 0.5% slippage like the bot
         vm.prank(operator);
-        uint256 out = vault.withdrawAndSwapV3(WETH, 500, 1_000e6, minOut, block.timestamp + 60);
+        uint256 out = vault.swapExactInputV3(USDC, WETH, 500, 1_000e6, minOut, block.timestamp + 60);
         assertGe(out, minOut);
         assertEq(IERC20(WETH).balanceOf(address(vault)), out);
         assertEq(IERC20(USDC).balanceOf(address(vault)), 0);
@@ -124,10 +124,10 @@ contract DCAVaultForkTest is Test {
         _assertNoAllowances(STEAKHOUSE_USDC);
     }
 
-    function test_Fork_WithdrawAndSwapV3_UsdcToCbbtcDirect() public {
+    function test_Fork_SwapExactInputV3_BuyUsdcToCbbtcDirect() public {
         uint256 minOut = _quote(USDC, CBBTC, 500, 1_000e6) * 99 / 100;
         vm.prank(operator);
-        uint256 out = vault.withdrawAndSwapV3(CBBTC, 500, 1_000e6, minOut, block.timestamp + 60);
+        uint256 out = vault.swapExactInputV3(USDC, CBBTC, 500, 1_000e6, minOut, block.timestamp + 60);
         assertGt(out, 0);
         assertEq(IERC20(CBBTC).balanceOf(address(vault)), out);
         _assertNoAllowances(STEAKHOUSE_USDC);
@@ -136,7 +136,7 @@ contract DCAVaultForkTest is Test {
     /// @dev Only the USDC pools run: WETH <-> cbBTC is rejected even though the pool exists.
     function test_Fork_Revert_SwapExactInputV3_WethToCbbtc() public {
         vm.prank(operator);
-        uint256 weth = vault.withdrawAndSwapV3(WETH, 500, 2_000e6, 1, block.timestamp);
+        uint256 weth = vault.swapExactInputV3(USDC, WETH, 500, 2_000e6, 1, block.timestamp);
         vm.prank(operator);
         vm.expectRevert(DCAVaultStorage.PairNotAllowed.selector);
         vault.swapExactInputV3(WETH, CBBTC, 3000, weth, 1, block.timestamp);
@@ -147,7 +147,7 @@ contract DCAVaultForkTest is Test {
         uint256 quoted = _quote(USDC, WETH, 500, 1_000e6);
         vm.prank(operator);
         vm.expectRevert(bytes("Too little received"));
-        vault.withdrawAndSwapV3(WETH, 500, 1_000e6, quoted * 2, block.timestamp);
+        vault.swapExactInputV3(USDC, WETH, 500, 1_000e6, quoted * 2, block.timestamp);
         assertApproxEqAbs(vault.totalStable(), 10_000e6, 2, "USDC stays in Morpho on failure");
     }
 
@@ -155,7 +155,7 @@ contract DCAVaultForkTest is Test {
 
     function test_Fork_SellToUsdcAutoDepositsToMorpho() public {
         vm.prank(operator);
-        uint256 weth = vault.withdrawAndSwapV3(WETH, 500, 1_000e6, 1, block.timestamp);
+        uint256 weth = vault.swapExactInputV3(USDC, WETH, 500, 1_000e6, 1, block.timestamp);
         uint256 sharesBefore = IERC4626(STEAKHOUSE_USDC).balanceOf(address(vault));
 
         vm.prank(operator);
@@ -183,7 +183,7 @@ contract DCAVaultForkTest is Test {
 
     function test_Fork_WithdrawBatch_UsdcPartialAndWethMax() public {
         vm.prank(operator);
-        uint256 weth = vault.withdrawAndSwapV3(WETH, 500, 1_000e6, 1, block.timestamp);
+        uint256 weth = vault.swapExactInputV3(USDC, WETH, 500, 1_000e6, 1, block.timestamp);
 
         address[] memory tokens = new address[](2);
         tokens[0] = USDC;
@@ -234,7 +234,7 @@ contract DCAVaultForkTest is Test {
 
         // operator flows keep working against the new vault
         vm.prank(operator);
-        vault.withdrawAndSwapV3(WETH, 500, 100e6, 1, block.timestamp);
+        vault.swapExactInputV3(USDC, WETH, 500, 100e6, 1, block.timestamp);
         assertGt(IERC20(WETH).balanceOf(address(vault)), 0);
     }
 
@@ -244,22 +244,21 @@ contract DCAVaultForkTest is Test {
     // Hookless V4 pools with liquidity on Base (checked 2026-10-08 via StateView.getLiquidity):
     // WETH/USDC 500/10 and 3000/60, USDC/cbBTC 500/10.
 
+    /// @dev A buy pulls exactly `amountIn` from Morpho and swaps it in the same tx.
     function test_Fork_SwapExactInputV4_UsdcToWeth() public {
-        vm.prank(operator);
-        vault.morphoWithdraw(1_000e6);
+        uint256 totalBefore = vault.totalStable();
         uint256 minOut = _quoteV4(USDC, WETH, 3000, 60, 1_000e6) * 995 / 1000;
         vm.prank(operator);
         uint256 out = vault.swapExactInputV4(USDC, WETH, 3000, 60, 1_000e6, minOut, block.timestamp + 60);
         assertGe(out, minOut);
         assertEq(IERC20(WETH).balanceOf(address(vault)), out);
-        assertEq(IERC20(USDC).balanceOf(address(vault)), 0);
+        assertEq(IERC20(USDC).balanceOf(address(vault)), 0, "exactly amountIn withdrawn and spent");
+        assertApproxEqAbs(vault.totalStable(), totalBefore - 1_000e6, 2);
         _assertNoAllowances(STEAKHOUSE_USDC);
         _assertNoPermit2Allowances();
     }
 
     function test_Fork_SwapExactInputV4_UsdcToCbbtc() public {
-        vm.prank(operator);
-        vault.morphoWithdraw(500e6);
         uint256 minOut = _quoteV4(USDC, CBBTC, 500, 10, 500e6) * 995 / 1000;
         vm.prank(operator);
         uint256 out = vault.swapExactInputV4(USDC, CBBTC, 500, 10, 500e6, minOut, block.timestamp + 60);
@@ -284,13 +283,13 @@ contract DCAVaultForkTest is Test {
     }
 
     function test_Fork_Revert_SwapExactInputV4_SlippageTooHigh() public {
-        vm.prank(operator);
-        vault.morphoWithdraw(1_000e6);
+        uint256 shares = IERC20(STEAKHOUSE_USDC).balanceOf(address(vault));
         uint256 quoted = _quoteV4(USDC, WETH, 3000, 60, 1_000e6);
         vm.prank(operator);
         vm.expectRevert();
         vault.swapExactInputV4(USDC, WETH, 3000, 60, 1_000e6, quoted * 2, block.timestamp + 60);
-        assertEq(IERC20(USDC).balanceOf(address(vault)), 1_000e6);
+        assertEq(IERC20(STEAKHOUSE_USDC).balanceOf(address(vault)), shares, "revert keeps the stable in Morpho");
+        assertEq(IERC20(USDC).balanceOf(address(vault)), 0);
     }
 
     // Native ETH (address(0)) V4 pool ETH/USDC 500/10, hookless.
@@ -305,8 +304,7 @@ contract DCAVaultForkTest is Test {
     /// @dev The cross combos of whitelisted fees / spacings (e.g. USDC/WETH 500/60) are not real pools; anyone
     ///      could initialize one at a rigged price. They must be rejected before any token moves.
     function test_Fork_Revert_SwapExactInputV4_UnlistedPoolCombo() public {
-        vm.prank(operator);
-        vault.morphoWithdraw(1_000e6);
+        uint256 shares = IERC20(STEAKHOUSE_USDC).balanceOf(address(vault));
         vm.startPrank(operator);
         vm.expectRevert(DCAVaultStorage.PoolNotAllowed.selector);
         vault.swapExactInputV4(USDC, WETH, 500, 60, 1_000e6, 1, block.timestamp);
@@ -315,13 +313,11 @@ contract DCAVaultForkTest is Test {
         vm.expectRevert(DCAVaultStorage.PoolNotAllowed.selector);
         vault.swapExactInputV3(USDC, WETH, 3000, 1_000e6, 1, block.timestamp); // V3 3000 not listed
         vm.stopPrank();
-        assertEq(IERC20(USDC).balanceOf(address(vault)), 1_000e6);
+        assertEq(IERC20(STEAKHOUSE_USDC).balanceOf(address(vault)), shares, "Morpho never touched");
     }
 
     function test_Fork_SwapExactInputV4_UsdcToNativeEth() public {
         _whitelistNative();
-        vm.prank(operator);
-        vault.morphoWithdraw(1_000e6);
         uint256 minOut = _quoteV4(USDC, address(0), 500, 10, 1_000e6) * 995 / 1000;
         vm.prank(operator);
         uint256 out = vault.swapExactInputV4(USDC, address(0), 500, 10, 1_000e6, minOut, block.timestamp + 60);

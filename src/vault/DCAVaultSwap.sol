@@ -13,8 +13,10 @@ abstract contract DCAVaultSwap is DCAVaultMorpho {
     // Internal
     // ------------------------------------------------------------------
 
-    /// @dev Checks shared by V3 and V4 swaps. `tickSpacing` is `V3_POOL` for V3, the V4 pool's spacing for V4.
-    function _checkSwap(
+    /// @dev Checks shared by V3 and V4 swaps, then, for a buy (`tokenIn == stableToken`), pulls exactly `amountIn`
+    ///      stable from Morpho so a buy is one tx. Every check runs before Morpho is touched; if the swap later
+    ///      fails the whole tx reverts and the stable stays in Morpho. `tickSpacing` is `V3_POOL` for V3.
+    function _prepareSwap(
         address tokenIn,
         address tokenOut,
         uint24 fee,
@@ -22,7 +24,7 @@ abstract contract DCAVaultSwap is DCAVaultMorpho {
         uint256 amountIn,
         uint256 amountOutMinimum,
         uint256 deadline
-    ) internal view {
+    ) internal {
         // Exactly one side is the stable, the other a whitelisted tradable token (e.g. WETH/USDC, ETH/USDC).
         // No token <-> token route. The two lists are disjoint, so this also rules out tokenIn == tokenOut.
         address stable = stableToken;
@@ -37,6 +39,12 @@ abstract contract DCAVaultSwap is DCAVaultMorpho {
         // The exact pool (stable, other, fee, tickSpacing) must be whitelisted as one entry: the operator cannot
         // pick an unused fee / spacing combo where it could seed its own pool at a rigged price.
         if (!allowedPool[other][fee][tickSpacing]) revert PoolNotAllowed();
+
+        // Buy: the stable lives in Morpho, never idle — withdraw exactly what this swap sells.
+        if (tokenIn == stable) {
+            uint256 shares = _withdrawFromMorpho(amountIn);
+            emit MorphoWithdrawn(amountIn, shares);
+        }
     }
 
     /// @dev Measures what actually arrived (never trusts the router's return value), emits `Swapped`,

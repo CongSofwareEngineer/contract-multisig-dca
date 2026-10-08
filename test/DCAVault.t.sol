@@ -249,7 +249,7 @@ contract DCAVaultTest is VaultTestBase {
     // =================================================================== swapExactInputV3
 
     function test_SwapExactInputV3_Buy() public {
-        usdc.mint(address(vault), 100e6);
+        _deposit(100e6);
         vm.prank(operator);
         uint256 out = vault.swapExactInputV3(address(usdc), address(weth), FEE_LOW, 100e6, 1, block.timestamp);
         assertEq(out, 0.05 ether);
@@ -360,34 +360,44 @@ contract DCAVaultTest is VaultTestBase {
         vault.swapExactInputV3(address(usdc), address(weth), FEE_LOW, 1e6, 1, block.timestamp);
     }
 
-    function test_Revert_WithdrawAndSwapV3_PoolNotAllowedBeforeMorpho() public {
+    function test_Revert_SwapExactInputV3_BuyPoolNotAllowedBeforeMorpho() public {
         _deposit(10e6);
         vm.prank(operator);
         vm.expectRevert(DCAVaultStorage.PoolNotAllowed.selector);
-        vault.withdrawAndSwapV3(address(weth), 10000, 1e6, 1, block.timestamp);
+        vault.swapExactInputV3(address(usdc), address(weth), 10000, 1e6, 1, block.timestamp);
         assertEq(morpho.balanceOf(address(vault)), 10e6);
     }
 
     function test_Revert_SwapExactInputV3_InsufficientBalance() public {
-        usdc.mint(address(vault), 1e6);
+        weth.mint(address(vault), 1 ether);
         vm.prank(operator);
         vm.expectRevert(DCAVaultStorage.InsufficientBalance.selector);
-        vault.swapExactInputV3(address(usdc), address(weth), FEE_LOW, 2e6, 1, block.timestamp);
+        vault.swapExactInputV3(address(weth), address(usdc), FEE_LOW, 1 ether + 1, 1, block.timestamp);
+    }
+
+    /// @dev A buy pulls exactly `amountIn` from Morpho; idle stable in the vault is not used for it.
+    function test_Revert_SwapExactInputV3_BuyMoreThanMorphoReverts() public {
+        _deposit(1e6);
+        usdc.mint(address(vault), 100e6); // idle stable does not count
+        vm.prank(operator);
+        vm.expectRevert();
+        vault.swapExactInputV3(address(usdc), address(weth), FEE_LOW, 1e6 + 1, 1, block.timestamp);
+        assertEq(morpho.balanceOf(address(vault)), 1e6);
     }
 
     function test_Revert_SwapExactInputV3_SlippageFromRouter() public {
-        usdc.mint(address(vault), 1e6);
+        _deposit(1e6);
         vm.prank(operator);
         vm.expectRevert(bytes("Too little received"));
         vault.swapExactInputV3(address(usdc), address(weth), FEE_LOW, 1e6, 1 ether, block.timestamp);
     }
 
-    // =================================================================== withdrawAndSwapV3
+    // =================================================================== swapExactInputV3 buy (pulls from Morpho)
 
-    function test_WithdrawAndSwapV3_BuysWithExactMorphoWithdraw() public {
+    function test_SwapExactInputV3_BuyWithdrawsExactAmountFromMorpho() public {
         _deposit(1000e6);
         vm.prank(operator);
-        uint256 out = vault.withdrawAndSwapV3(address(cbbtc), FEE_LOW, 100e6, 1, block.timestamp);
+        uint256 out = vault.swapExactInputV3(address(usdc), address(cbbtc), FEE_LOW, 100e6, 1, block.timestamp);
         assertEq(out, 1e5); // 100 USDC -> 0.001 cbBTC
         assertEq(cbbtc.balanceOf(address(vault)), 1e5);
         assertEq(usdc.balanceOf(address(vault)), 0);
@@ -395,32 +405,32 @@ contract DCAVaultTest is VaultTestBase {
         _assertNoAllowances();
     }
 
-    function test_WithdrawAndSwapV3_SwapFailureKeepsUsdcInMorpho() public {
+    function test_SwapExactInputV3_BuySwapFailureKeepsUsdcInMorpho() public {
         _deposit(1000e6);
         vm.prank(operator);
         vm.expectRevert(bytes("Too little received"));
-        vault.withdrawAndSwapV3(address(weth), FEE_LOW, 100e6, 100 ether, block.timestamp);
+        vault.swapExactInputV3(address(usdc), address(weth), FEE_LOW, 100e6, 100 ether, block.timestamp);
         assertEq(morpho.balanceOf(address(vault)), 1000e6);
         assertEq(usdc.balanceOf(address(vault)), 0);
     }
 
-    function test_Revert_WithdrawAndSwapV3_TokenOutStable() public {
+    function test_Revert_SwapExactInputV3_BuyTokenOutStable() public {
         _deposit(10e6);
         vm.prank(operator);
         vm.expectRevert(DCAVaultStorage.TokenNotAllowed.selector);
-        vault.withdrawAndSwapV3(address(usdc), FEE_LOW, 1e6, 1, block.timestamp);
+        vault.swapExactInputV3(address(usdc), address(usdc), FEE_LOW, 1e6, 1, block.timestamp);
     }
 
-    function test_Revert_WithdrawAndSwapV3_ZeroAmount() public {
+    function test_Revert_SwapExactInputV3_BuyZeroAmount() public {
         vm.prank(operator);
         vm.expectRevert(DCAVaultStorage.ZeroAmount.selector);
-        vault.withdrawAndSwapV3(address(weth), FEE_LOW, 0, 1, block.timestamp);
+        vault.swapExactInputV3(address(usdc), address(weth), FEE_LOW, 0, 1, block.timestamp);
     }
 
     // =================================================================== swapExactInputV4
 
     function test_SwapExactInputV4_Buy() public {
-        usdc.mint(address(vault), 100e6);
+        _deposit(100e6);
         vm.prank(operator);
         vm.expectEmit(true, true, false, true, address(vault));
         emit DCAVaultStorage.Swapped(address(usdc), address(weth), FEE_LOW, 100e6, 0.05 ether, 4);
@@ -432,7 +442,7 @@ contract DCAVaultTest is VaultTestBase {
     }
 
     function test_SwapExactInputV4_BuildsSortedHooklessPoolKey() public {
-        usdc.mint(address(vault), 100e6);
+        _deposit(100e6);
         vm.prank(operator);
         vault.swapExactInputV4(address(usdc), address(weth), FEE_MED, TS_MED, 100e6, 1, block.timestamp);
         (address c0, address c1, uint24 fee, int24 ts, address hooks) = v4Router.lastKey();
@@ -541,10 +551,20 @@ contract DCAVaultTest is VaultTestBase {
     }
 
     function test_Revert_SwapExactInputV4_InsufficientBalance() public {
-        usdc.mint(address(vault), 1e6);
+        weth.mint(address(vault), 1 ether);
         vm.prank(operator);
         vm.expectRevert(DCAVaultStorage.InsufficientBalance.selector);
+        vault.swapExactInputV4(address(weth), address(usdc), FEE_LOW, TS_LOW, 1 ether + 1, 1, block.timestamp);
+    }
+
+    /// @dev A buy pulls exactly `amountIn` from Morpho; idle stable in the vault is not used for it.
+    function test_Revert_SwapExactInputV4_BuyMoreThanMorphoReverts() public {
+        _deposit(1e6);
+        usdc.mint(address(vault), 100e6); // idle stable does not count
+        vm.prank(operator);
+        vm.expectRevert();
         vault.swapExactInputV4(address(usdc), address(weth), FEE_LOW, TS_LOW, 1e6 + 1, 1, block.timestamp);
+        assertEq(morpho.balanceOf(address(vault)), 1e6);
     }
 
     function test_Revert_SwapExactInputV4_AmountTooLarge() public {
@@ -562,10 +582,53 @@ contract DCAVaultTest is VaultTestBase {
     }
 
     function test_Revert_SwapExactInputV4_SlippageFromRouter() public {
-        usdc.mint(address(vault), 100e6);
+        _deposit(100e6);
         vm.prank(operator);
         vm.expectRevert("V4TooLittleReceived");
         vault.swapExactInputV4(address(usdc), address(weth), FEE_LOW, TS_LOW, 100e6, 0.05 ether + 1, block.timestamp);
+    }
+
+    function test_SwapExactInputV4_BuyWithdrawsExactAmountFromMorpho() public {
+        _deposit(1000e6);
+        vm.prank(operator);
+        vm.expectEmit(false, false, false, true, address(vault));
+        emit DCAVaultStorage.MorphoWithdrawn(100e6, 100e6);
+        vm.expectEmit(true, true, false, true, address(vault));
+        emit DCAVaultStorage.Swapped(address(usdc), address(weth), FEE_LOW, 100e6, 0.05 ether, 4);
+        uint256 out = vault.swapExactInputV4(address(usdc), address(weth), FEE_LOW, TS_LOW, 100e6, 1, block.timestamp);
+        assertEq(out, 0.05 ether);
+        assertEq(weth.balanceOf(address(vault)), 0.05 ether);
+        assertEq(usdc.balanceOf(address(vault)), 0);
+        assertEq(vault.totalStable(), 900e6);
+        _assertNoAllowances();
+    }
+
+    function test_SwapExactInputV4_BuyFailureKeepsUsdcInMorpho() public {
+        _deposit(1000e6);
+        vm.prank(operator);
+        vm.expectRevert("V4TooLittleReceived");
+        vault.swapExactInputV4(address(usdc), address(weth), FEE_LOW, TS_LOW, 100e6, 0.05 ether + 1, block.timestamp);
+        assertEq(morpho.balanceOf(address(vault)), 1000e6);
+        assertEq(usdc.balanceOf(address(vault)), 0);
+    }
+
+    function test_Revert_SwapExactInputV4_BuyZeroAmountSkipsMorpho() public {
+        _deposit(10e6);
+        vm.prank(operator);
+        vm.expectRevert(DCAVaultStorage.ZeroAmount.selector);
+        vault.swapExactInputV4(address(usdc), address(weth), FEE_LOW, TS_LOW, 0, 1, block.timestamp);
+    }
+
+    function test_Revert_SwapExactInputV4_BuyBadPoolNeverTouchesMorpho() public {
+        _deposit(10e6);
+        vm.startPrank(operator);
+        vm.expectRevert(DCAVaultStorage.PoolNotAllowed.selector);
+        vault.swapExactInputV4(address(usdc), address(weth), FEE_LOW, TS_MED, 1e6, 1, block.timestamp);
+        // tickSpacing 0 is the V3 marker and must never unlock a V4 swap.
+        vm.expectRevert(DCAVaultStorage.PoolNotAllowed.selector);
+        vault.swapExactInputV4(address(usdc), address(weth), FEE_LOW, 0, 1e6, 1, block.timestamp);
+        vm.stopPrank();
+        assertEq(morpho.balanceOf(address(vault)), 10e6);
     }
 
     function test_SwapExactInputV4_UsesCurrentRouterAddresses() public {
@@ -574,7 +637,7 @@ contract DCAVaultTest is VaultTestBase {
         ur.setRate(address(usdc), address(weth), 5e8, 1);
         _passProposal(DCAVaultStorage.ProposalType.ChangePermit2, abi.encode(address(p2)));
         _passProposal(DCAVaultStorage.ProposalType.ChangeUniversalRouter, abi.encode(address(ur)));
-        usdc.mint(address(vault), 10e6);
+        _deposit(10e6);
         vm.prank(operator);
         vault.swapExactInputV4(address(usdc), address(weth), FEE_LOW, TS_LOW, 10e6, 1, block.timestamp);
         assertEq(usdc.balanceOf(address(ur)), 10e6, "new router got tokenIn");
@@ -969,7 +1032,7 @@ contract DCAVaultTest is VaultTestBase {
         vault.approve(id);
         assertTrue(vault.allowedPool(address(weth), 100, 1));
 
-        usdc.mint(address(vault), 1e6);
+        _deposit(1e6);
         vm.prank(operator);
         vault.swapExactInputV4(address(usdc), address(weth), 100, 1, 1e6, 1, block.timestamp);
     }
@@ -982,7 +1045,7 @@ contract DCAVaultTest is VaultTestBase {
         emit DCAVaultStorage.PoolAllowed(address(weth), FEE_LOW, TS_LOW, false);
         vault.approve(id);
         assertFalse(vault.allowedPool(address(weth), FEE_LOW, TS_LOW));
-        usdc.mint(address(vault), 1e6);
+        _deposit(1e6);
         vm.prank(operator);
         vm.expectRevert(DCAVaultStorage.PoolNotAllowed.selector);
         vault.swapExactInputV4(address(usdc), address(weth), FEE_LOW, TS_LOW, 1e6, 1, block.timestamp);
@@ -1077,7 +1140,7 @@ contract DCAVaultTest is VaultTestBase {
         vault.approve(id);
         assertEq(vault.uniV3Router(), address(newRouter));
 
-        usdc.mint(address(vault), 100e6);
+        _deposit(100e6);
         vm.prank(operator);
         vault.swapExactInputV3(address(usdc), address(weth), FEE_LOW, 100e6, 1, block.timestamp);
         assertEq(newRouter.lastRecipient(), address(vault));
@@ -1338,7 +1401,7 @@ contract DCAVaultTest is VaultTestBase {
 
     function test_SwapExactInputV4_BuyNative() public {
         _enableNative();
-        usdc.mint(address(vault), 100e6);
+        _deposit(100e6);
         vm.prank(operator);
         vm.expectEmit(true, true, false, true, address(vault));
         emit DCAVaultStorage.Swapped(address(usdc), address(0), FEE_LOW, 100e6, 0.05 ether, 4);
@@ -1394,12 +1457,12 @@ contract DCAVaultTest is VaultTestBase {
         vm.stopPrank();
     }
 
-    function test_Revert_WithdrawAndSwapV3_Native() public {
+    function test_Revert_SwapExactInputV3_BuyNative() public {
         _enableNative();
         _deposit(100e6);
         vm.prank(operator);
         vm.expectRevert(DCAVaultStorage.NativeNotSupported.selector);
-        vault.withdrawAndSwapV3(address(0), FEE_LOW, 100e6, 1, block.timestamp);
+        vault.swapExactInputV3(address(usdc), address(0), FEE_LOW, 100e6, 1, block.timestamp);
     }
 
     function test_WithdrawBatch_Native() public {

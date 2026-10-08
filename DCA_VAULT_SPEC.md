@@ -123,7 +123,7 @@ Thay thế cho mô hình EOA hiện tại (approve unlimited cho Uniswap V3 Rout
 ### 5.2 OPERATOR (modifier `onlyOperator` + `whenNotPaused` + `nonReentrant`)
 
 #### `swapExactInputV3(address tokenIn, address tokenOut, uint24 fee, uint256 amountIn, uint256 amountOutMinimum, uint256 deadline)`
-- Dùng cho **cả mua và bán**, chỉ đổi chiều tokenIn/tokenOut.
+- Dùng cho **cả mua và bán**, chỉ đổi chiều tokenIn/tokenOut. Một hàm duy nhất — không còn `withdrawAndSwapV3` (gộp 2026-10-08, owner request).
 - Check:
   - **Một bên phải là `stableToken`** (`tokenIn == stableToken || tokenOut == stableToken`), không có route token ↔ token (`PairNotAllowed`)
   - Bên còn lại phải trong `allowedToken` (`TokenNotAllowed`; stable → stable cũng rơi vào đây vì stable không nằm trong `allowedToken`)
@@ -131,16 +131,12 @@ Thay thế cho mô hình EOA hiện tại (approve unlimited cho Uniswap V3 Rout
   - `amountIn > 0`, `amountOutMinimum > 0`
   - `block.timestamp <= deadline`
   - Pool `(token, fee, V3_POOL = 0)` nằm trong `allowedPool` (`PoolNotAllowed`; xem mục 7)
+- **Lệnh mua (`tokenIn == stableToken`)**: sau khi pass mọi check, rút **đúng `amountIn`** từ Morpho (`IERC4626(morphoVault).withdraw(amountIn, address(this), address(this))`, emit `MorphoWithdrawn`) rồi swap — tất cả trong 1 tx. Stable idle sẵn trong contract **không** được dùng cho lệnh mua. Nếu swap fail → toàn bộ tx revert, stable vẫn ở Morpho. Morpho không đủ → revert (lỗi của Morpho).
+- **Lệnh bán**: swap token đang có trong contract (`amountIn <= balance`, `InsufficientBalance`).
 - Atomic approve: `forceApprove(router, amountIn)` → `exactInputSingle(... recipient: address(this) ...)` → `forceApprove(router, 0)`
 - **`recipient` luôn là `address(this)`, hardcode, không nhận từ tham số.**
 - Nếu `tokenOut == stableToken` (lệnh bán) → tự động deposit số stable nhận được lên Morpho trong cùng tx.
 - Emit `Swapped(tokenIn, tokenOut, fee, amountIn, amountOut, 3)`
-
-#### `withdrawAndSwapV3(address tokenOut, uint24 fee, uint256 stableAmount, uint256 amountOutMinimum, uint256 deadline)`
-- Lệnh **mua** gộp: rút **đúng `stableAmount`** từ Morpho → swap stable → tokenOut, tất cả trong 1 tx.
-- `IERC4626(morphoVault).withdraw(stableAmount, address(this), address(this))`
-- Sau đó cùng logic/check như `swapExactInputV3` với `tokenIn = stableToken`.
-- Nếu swap fail → toàn bộ tx revert, stable vẫn ở Morpho.
 
 #### `morphoDeposit(uint256 amount)`
 - Chỉ stable. Đưa stable idle trong contract lên Morpho.
@@ -158,7 +154,7 @@ Thay thế cho mô hình EOA hiện tại (approve unlimited cho Uniswap V3 Rout
 - Output: `TAKE_ALL` trả cho `msg.sender` của UniversalRouter = chính vault (không có tham số recipient).
 - Kiểm tra balance trước/sau: tokenOut tăng ≥ minOut (`InsufficientOutput`), tokenIn giảm ≤ amountIn (`ExcessiveInput`).
 - Nếu `tokenOut == stableToken` (lệnh bán) → tự deposit số stable nhận được lên Morpho (giống V3). Emit `Swapped(..., version = 4)`.
-- Không có `withdrawAndSwapV4`: mua qua V4 = `morphoWithdraw` rồi `swapExactInputV4` (2 tx).
+- **Lệnh mua (`tokenIn == stableToken`)**: giống V3 — sau mọi check, rút **đúng `amountIn`** từ Morpho rồi swap trong cùng 1 tx (không có hàm `withdrawAndSwapV4` riêng; gộp 2026-10-08, owner request). Stable idle không được dùng; swap fail → cả tx revert, stable vẫn ở Morpho.
 - **ETH native (`address(0)`, nếu đã whitelist)** (chốt 2026-10-08):
   - `address(0)` luôn là `currency0` trong `PoolKey` (sort tự nhiên).
   - Bán ETH: **không approve gì cả** — gửi đúng `amountIn` làm `msg.value` cho `UniversalRouter.execute`; `SETTLE_ALL` trả PoolManager từ số ETH đó.
@@ -344,7 +340,7 @@ dca-vault/
 │   │   ├── DCAVaultRoles.sol    # signers / operators / withdraw addresses / token, fee & tick-spacing whitelists
 │   │   ├── DCAVaultMorpho.sol   # depositAndSupply, morphoDeposit/Withdraw, ChangeMorphoVault / ChangeStableToken
 │   │   ├── DCAVaultSwap.sol     # shared swap checks + settlement (base of V3 / V4)
-│   │   ├── DCAVaultSwapV3.sol   # swapExactInputV3, withdrawAndSwapV3
+│   │   ├── DCAVaultSwapV3.sol   # swapExactInputV3 (mua = rút Morpho + swap)
 │   │   ├── DCAVaultSwapV4.sol   # swapExactInputV4 (UniversalRouter + Permit2)
 │   │   └── DCAVaultProposals.sol # pause, propose/approve/cancel, execute, WithdrawBatch
 │   └── interfaces/
@@ -354,7 +350,7 @@ dca-vault/
 │       └── IV4Router.sol        # V4 PoolKey / ExactInputSingleParams
 ├── test/
 │   ├── DCAVault.t.sol           # unit test roles, proposals, limits
-│   ├── DCAVault.fork.t.sol      # fork Base: deposit → Morpho, withdrawAndSwap, sell → Morpho, batch withdraw, đổi vault
+│   ├── DCAVault.fork.t.sol      # fork Base: deposit → Morpho, mua (rút Morpho + swap), sell → Morpho, batch withdraw, đổi vault
 │   └── DCAVault.security.t.sol  # test các bất biến mục 10, operator độc hại
 └── script/
     └── Deploy.s.sol             # đọc địa chỉ từ env/config, deploy, verify basescan
@@ -370,7 +366,7 @@ Chạy test fork: `forge test --fork-url $BASE_RPC_URL -vvv`
 1. Setup Foundry + OpenZeppelin
 2. Roles + proposal system + threshold
 3. `depositAndSupply`, `morphoDeposit`, `morphoWithdraw`
-4. `swapExactInputV3`, `withdrawAndSwapV3` (kèm auto-deposit khi bán ra USDC)
+4. `swapExactInputV3` (mua: tự rút Morpho; bán: auto-deposit USDC lên Morpho)
 5. `WithdrawBatch`, `ChangeMorphoVault` (có migrate)
 6. Whitelist pool (`allowedPool`), `pause()` (1 signer) + proposal `Unpause`
 7. Toàn bộ test (unit + fork + security)
@@ -427,7 +423,7 @@ Các quyết định chi tiết khi code, không đổi hành vi chính của sp
 
 Owner đã xem xét và **chọn giữ nguyên** theo spec. Ghi lại để audit / vận hành biết:
 
-1. **Operator bị hack có thể phá giá trị qua sandwich.** Contract chỉ check `amountOutMinimum > 0`. Kẻ có key operator có thể bơm giá một pool **đã whitelist** rồi gọi `withdrawAndSwapV3(toàn bộ USDC, minOut = 1)` (hoặc bán toàn bộ WETH/cbBTC) và back-run → token không "rời" contract trực tiếp nhưng phần lớn giá trị bị lấy. Cần vốn thật để đẩy giá pool sâu. Biến thể rẻ hơn (tự tạo pool rồi route vào) đã bị chặn bởi whitelist theo từng pool (§7, 2026-10-08) — với điều kiện signers chỉ whitelist pool có thật, có thanh khoản. Biện pháp hiện tại: signer `pause()` ngay khi phát hiện, giữ ít operator, monitor `Swapped` event. Phương án nếu cần sau: TWAP check on-chain hoặc cap theo ngày.
+1. **Operator bị hack có thể phá giá trị qua sandwich.** Contract chỉ check `amountOutMinimum > 0`. Kẻ có key operator có thể bơm giá một pool **đã whitelist** rồi gọi `swapExactInputV3/V4(USDC → token, toàn bộ USDC, minOut = 1)` (hoặc bán toàn bộ WETH/cbBTC) và back-run → token không "rời" contract trực tiếp nhưng phần lớn giá trị bị lấy. Cần vốn thật để đẩy giá pool sâu. Biến thể rẻ hơn (tự tạo pool rồi route vào) đã bị chặn bởi whitelist theo từng pool (§7, 2026-10-08) — với điều kiện signers chỉ whitelist pool có thật, có thanh khoản. Biện pháp hiện tại: signer `pause()` ngay khi phát hiện, giữ ít operator, monitor `Swapped` event. Phương án nếu cần sau: TWAP check on-chain hoặc cap theo ngày.
 2. **`ChangeMorphoVault` all-or-nothing.** Nếu vault cũ pause / thiếu thanh khoản / bị hack, `redeem` toàn bộ revert → không đổi vault được; `depositAndSupply` và lệnh bán vẫn đẩy USDC vào vault cũ. Biện pháp: signer `pause()` để chặn bán ra USDC; chờ vault cũ có thanh khoản.
 3. **2 signer → threshold 1.** Một signer bị lộ key là tự mình làm được mọi thứ (AddWithdrawAddress + WithdrawBatch, AddSigner, ChangeUniV3Router sang router độc…). Khuyến nghị deploy ≥ 3 signer (threshold 2).
 4. **Proposal `Unpause` cũ còn hạn** (tạo trong lần pause trước) vẫn approve được trong lần pause sau. Signers nên `cancel` / `reject` các proposal `Unpause` thừa.

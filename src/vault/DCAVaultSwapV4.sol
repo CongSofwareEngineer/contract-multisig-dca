@@ -39,8 +39,9 @@ abstract contract DCAVaultSwapV4 is DCAVaultSwap {
     // ------------------------------------------------------------------
 
     /// @notice Swaps an exact amount of a whitelisted token via a Uniswap V4 pool (UniversalRouter + Permit2).
-    ///         Same rules as `swapExactInputV3`: one side must be `stableToken`; a sell to the stable is supplied
-    ///         to Morpho. Unlike V3, native ETH (address(0)) works here if it is whitelisted.
+    ///         One side must be `stableToken`. Buy (`tokenIn == stableToken`): withdraws exactly `amountIn` from
+    ///         Morpho, then swaps, in one tx (idle stable in the vault is not used). Sell: swaps a token the vault
+    ///         holds and supplies the stable received to Morpho. Native ETH (address(0)) works if whitelisted.
     /// @dev The vault builds `commands` / `inputs` itself (V4_SWAP: SWAP_EXACT_IN_SINGLE + SETTLE_ALL + TAKE_ALL);
     ///      the operator never supplies calldata. `PoolKey.hooks` is hardcoded to `address(0)`.
     ///      TAKE_ALL pays the UniversalRouter's caller, i.e. always this vault.
@@ -48,7 +49,7 @@ abstract contract DCAVaultSwapV4 is DCAVaultSwap {
     /// @param tokenOut token to buy (`stableToken` for a sell; address(0) = native ETH)
     /// @param fee pool fee
     /// @param tickSpacing V4 tick spacing (>= 1); (token, fee, tickSpacing) must be in `allowedPool`
-    /// @param amountIn exact amount of `tokenIn` to sell (<= uint128 max)
+    /// @param amountIn exact amount of `tokenIn` to sell (<= uint128 max); for a buy, the stable pulled from Morpho
     /// @param amountOutMinimum minimum output (> 0, <= uint128 max); computed off-chain by the bot
     /// @param deadline unix timestamp after which the swap reverts
     /// @return amountOut amount of `tokenOut` received by the vault
@@ -63,9 +64,9 @@ abstract contract DCAVaultSwapV4 is DCAVaultSwap {
     ) external onlyOperator whenNotPaused nonReentrant returns (uint256 amountOut) {
         // tickSpacing 0 is the V3 marker in `allowedPool` — never let it unlock a V4 swap.
         if (tickSpacing < MIN_TICK_SPACING) revert PoolNotAllowed();
-        _checkSwap(tokenIn, tokenOut, fee, tickSpacing, amountIn, amountOutMinimum, deadline);
         // V4 router params are uint128; reject instead of silently truncating.
         if (amountIn > type(uint128).max || amountOutMinimum > type(uint128).max) revert AmountTooLarge();
+        _prepareSwap(tokenIn, tokenOut, fee, tickSpacing, amountIn, amountOutMinimum, deadline); // buy: pulls from Morpho
 
         uint256 inBefore = _balanceOf(tokenIn);
         if (amountIn > inBefore) revert InsufficientBalance();

@@ -39,7 +39,7 @@ contract DCAVaultSecurityTest is VaultTestBase {
         } else if (act == 5) {
             _tryV4(a, b, fee, f, amount);
         } else if (act == 1) {
-            try vault.withdrawAndSwapV3(b, fee, amount, 1, block.timestamp) {} catch {}
+            try vault.swapExactInputV3(address(usdc), b, fee, amount, 1, block.timestamp) {} catch {}
         } else if (act == 2) {
             try vault.morphoDeposit(amount) {} catch {}
         } else if (act == 3) {
@@ -141,16 +141,15 @@ contract DCAVaultSecurityTest is VaultTestBase {
         vault.swapExactInputV3(address(cbbtc), address(usdc), FEE_MED, 1e7, 1, block.timestamp);
         assertEq(router.lastRecipient(), address(vault));
         vm.prank(operator);
-        vault.withdrawAndSwapV3(address(weth), FEE_LOW, 100e6, 1, block.timestamp);
+        vault.swapExactInputV3(address(usdc), address(weth), FEE_LOW, 100e6, 1, block.timestamp);
         assertEq(router.lastRecipient(), address(vault));
         // V4: TAKE_ALL pays msg.sender of the UniversalRouter = the vault; nothing reaches the operator.
         uint256 before = weth.balanceOf(address(vault));
         vm.prank(operator);
-        vault.morphoWithdraw(100e6);
-        vm.prank(operator);
         vault.swapExactInputV4(address(usdc), address(weth), FEE_LOW, TS_LOW, 100e6, 1, block.timestamp);
         assertEq(weth.balanceOf(address(vault)), before + 0.05 ether);
         assertEq(weth.balanceOf(operator), 0);
+        assertEq(usdc.balanceOf(operator), 0);
         _assertNothingLeaked();
     }
 
@@ -166,13 +165,12 @@ contract DCAVaultSecurityTest is VaultTestBase {
 
     function test_Invariant3_AllowancesZeroAfterEveryFlow() public {
         vm.startPrank(operator);
-        vault.withdrawAndSwapV3(address(weth), FEE_LOW, 100e6, 1, block.timestamp);
+        vault.swapExactInputV3(address(usdc), address(weth), FEE_LOW, 100e6, 1, block.timestamp);
         _assertNoAllowances();
         vault.swapExactInputV3(address(weth), address(usdc), FEE_LOW, 1 ether, 1, block.timestamp);
         _assertNoAllowances();
         vault.swapExactInputV3(address(cbbtc), address(usdc), FEE_LOW, 1e7, 1, block.timestamp);
         _assertNoAllowances();
-        vault.morphoWithdraw(100e6);
         vault.swapExactInputV4(address(usdc), address(weth), FEE_LOW, TS_LOW, 100e6, 1, block.timestamp);
         _assertNoAllowances();
         vault.swapExactInputV4(address(weth), address(usdc), FEE_MED, TS_MED, 1 ether, 1, block.timestamp);
@@ -339,11 +337,13 @@ contract DCAVaultSecurityTest is VaultTestBase {
         vm.expectRevert(DCAVaultStorage.IsPaused.selector);
         vault.swapExactInputV3(address(weth), address(usdc), FEE_LOW, 1 ether, 1, block.timestamp);
         vm.expectRevert(DCAVaultStorage.IsPaused.selector);
-        vault.withdrawAndSwapV3(address(weth), FEE_LOW, 1e6, 1, block.timestamp);
+        vault.swapExactInputV3(address(usdc), address(weth), FEE_LOW, 1e6, 1, block.timestamp);
         vm.expectRevert(DCAVaultStorage.IsPaused.selector);
         vault.morphoDeposit(1);
         vm.expectRevert(DCAVaultStorage.IsPaused.selector);
         vault.morphoWithdraw(1);
+        vm.expectRevert(DCAVaultStorage.IsPaused.selector);
+        vault.swapExactInputV4(address(usdc), address(weth), 500, 10, 1, 1, block.timestamp);
         vm.expectRevert(DCAVaultStorage.IsPaused.selector);
         vault.swapExactInputV4(address(usdc), address(weth), 500, 10, 1, 1, block.timestamp);
         vm.stopPrank();
@@ -453,7 +453,7 @@ contract DCAVaultSecurityTest is VaultTestBase {
         vm.expectRevert(DCAVaultStorage.TokenNotAllowed.selector);
         vault.swapExactInputV3(address(other), address(usdc), FEE_LOW, 1 ether, 1, block.timestamp);
         vm.expectRevert(DCAVaultStorage.TokenNotAllowed.selector);
-        vault.withdrawAndSwapV3(address(other), FEE_LOW, 1e6, 1, block.timestamp);
+        vault.swapExactInputV3(address(usdc), address(other), FEE_LOW, 1e6, 1, block.timestamp);
         vm.stopPrank();
     }
 
@@ -468,7 +468,7 @@ contract DCAVaultSecurityTest is VaultTestBase {
         _deposit(1_000e6);
         // operator
         vm.startPrank(operator);
-        vault.withdrawAndSwapV3(address(weth), FEE_LOW, 100e6, 1, block.timestamp);
+        vault.swapExactInputV3(address(usdc), address(weth), FEE_LOW, 100e6, 1, block.timestamp);
         vault.swapExactInputV3(address(weth), address(usdc), FEE_LOW, 1 ether, 1, block.timestamp);
         vault.swapExactInputV3(address(cbbtc), address(usdc), FEE_MED, 1e7, 1, block.timestamp);
         vault.morphoWithdraw(5e6);
@@ -625,7 +625,7 @@ contract DCAVaultSecurityTest is VaultTestBase {
     /// @dev After a router switch the old router holds no allowance and cannot pull anything (invariant 3).
     function test_Security_OldRouterHasNoPowerAfterChange() public {
         vm.prank(operator);
-        vault.withdrawAndSwapV3(address(weth), FEE_LOW, 100e6, 1, block.timestamp);
+        vault.swapExactInputV3(address(usdc), address(weth), FEE_LOW, 100e6, 1, block.timestamp);
 
         _passProposal(DCAVaultStorage.ProposalType.ChangeUniV3Router, abi.encode(makeAddr("newRouter")));
 

@@ -24,7 +24,7 @@ import {DCAVaultProposals} from "./vault/DCAVaultProposals.sol";
 ///      - DCAVaultRoles     : signers / operators / withdraw addresses / token & pool whitelists
 ///      - DCAVaultMorpho    : depositAndSupply, morphoDeposit / morphoWithdraw, vault migration
 ///      - DCAVaultSwap      : checks + settlement shared by V3 and V4 swaps
-///      - DCAVaultSwapV3    : swapExactInputV3, withdrawAndSwapV3 (SwapRouter02)
+///      - DCAVaultSwapV3    : swapExactInputV3 (SwapRouter02; a buy pulls from Morpho)
 ///      - DCAVaultSwapV4    : swapExactInputV4 (UniversalRouter + Permit2)
 ///      - DCAVaultProposals : pause, propose / approve / cancel, proposal execution
 contract DCAVault is DCAVaultSwapV3, DCAVaultSwapV4, DCAVaultProposals {

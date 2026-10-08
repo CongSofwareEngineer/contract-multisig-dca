@@ -2,13 +2,13 @@
 > Last updated: 2026-10-08
 
 ## Overview
-Operator swaps through **Uniswap V4** pools, via the UniversalRouter + Permit2. Same rules as V3 (one side must be `stableToken`, output stays in the vault, a sell to the stable is supplied to Morpho), and the same pool whitelist: `(token, fee, tickSpacing)` must be one entry of `allowedPool` ([swap-v3 §3](swap-v3.md#3-pool-whitelist-allowedpool--shared-with-v4)), with `hooks` always `address(0)`. Unlike V3, V4 can trade **native ETH** (`address(0)`) once it is whitelisted in `allowedToken`.
+Operator swaps through **Uniswap V4** pools, via the UniversalRouter + Permit2. Same rules as V3 (one side must be `stableToken`, output stays in the vault, a buy pulls exactly `amountIn` stable from Morpho in the same tx, a sell to the stable is supplied to Morpho), and the same pool whitelist: `(token, fee, tickSpacing)` must be one entry of `allowedPool` ([swap-v3 §3](swap-v3.md#3-pool-whitelist-allowedpool--shared-with-v4)), with `hooks` always `address(0)`. Unlike V3, V4 can trade **native ETH** (`address(0)`) once it is whitelisted in `allowedToken`.
 Sub-logics:
 1. `swapExactInputV4`
 2. Changing Permit2 / UniversalRouter
 
 ## Shared
-- Code: `swapExactInputV4`, `_executeV4`, `_buildV4SwapInput` in `src/vault/DCAVaultSwapV4.sol`; shared `_checkSwap` / `_settleSwap` (same as V3) in the base `src/vault/DCAVaultSwap.sol`; storage, constants, events, errors in `src/vault/DCAVaultStorage.sol`; pool whitelist (`_setAllowedPool`) in `src/vault/DCAVaultRoles.sol`; proposal handlers in `src/vault/DCAVaultProposals.sol`.
+- Code: `swapExactInputV4`, `_executeV4`, `_buildV4SwapInput` in `src/vault/DCAVaultSwapV4.sol`; shared `_prepareSwap` / `_settleSwap` (same as V3) in the base `src/vault/DCAVaultSwap.sol`; storage, constants, events, errors in `src/vault/DCAVaultStorage.sol`; pool whitelist (`_setAllowedPool`) in `src/vault/DCAVaultRoles.sol`; proposal handlers in `src/vault/DCAVaultProposals.sol`.
 - Storage: `permit2`, `universalRouter` (constructor, non-zero; then only via proposal); pool whitelist `allowedPool` (shared with V3).
 - Constants: `SWAP_VERSION_V4 = 4`, `MIN_TICK_SPACING = 1`, `MAX_TICK_SPACING = 32767` (v4-core bounds). Private: `V4_SWAP = 0x10`, `SWAP_EXACT_IN_SINGLE = 0x06`, `SETTLE_ALL = 0x0c`, `TAKE_ALL = 0x0f`.
 - Events: `Swapped(tokenIn, tokenOut, fee, amountIn, amountOut, 4)`, `Permit2Changed`, `UniversalRouterChanged`.
@@ -22,8 +22,8 @@ Exact-input swap through one hookless V4 pool. Used for buys (stable → WETH / 
 ### Entry points
 `swapExactInputV4(address tokenIn, address tokenOut, uint24 fee, int24 tickSpacing, uint256 amountIn, uint256 amountOutMinimum, uint256 deadline)` — `onlyOperator whenNotPaused nonReentrant`, returns `amountOut`.
 ### Flow
-1. `tickSpacing >= 1` (else `PoolNotAllowed`: 0 is the V3 marker in `allowedPool` and must never unlock a V4 swap).
-2. Same checks as V3 (`_checkSwap`): one side is `stableToken`, the other in `allowedToken`, `amountIn > 0`, `amountOutMinimum > 0`, `block.timestamp <= deadline`, `allowedPool[token][fee][tickSpacing]` (`PoolNotAllowed`). Then `amountIn` and `amountOutMinimum` ≤ `uint128.max` (V4 params are uint128 — never truncated).
+1. `tickSpacing >= 1` (else `PoolNotAllowed`: 0 is the V3 marker in `allowedPool` and must never unlock a V4 swap); `amountIn` and `amountOutMinimum` ≤ `uint128.max` (`AmountTooLarge`; V4 params are uint128 — never truncated).
+2. `_prepareSwap` (same as V3): one side is `stableToken`, the other in `allowedToken`, `amountIn > 0`, `amountOutMinimum > 0`, `block.timestamp <= deadline`, `allowedPool[token][fee][tickSpacing]` (`PoolNotAllowed`). **Buy** (`tokenIn == stableToken`): only after every check, withdraw exactly `amountIn` from Morpho (receiver / owner = vault) and emit `MorphoWithdrawn` — one tx, no separate `morphoWithdraw`.
 3. Snapshot balances (`_balanceOf`: native ETH → `address(this).balance`); `amountIn <= balance(tokenIn)`.
 4. Build the input (`_buildV4SwapInput`): `PoolKey{currency0, currency1 = sorted(tokenIn, tokenOut), fee, tickSpacing, hooks: address(0)}`, `zeroForOne = tokenIn < tokenOut`; actions `SWAP_EXACT_IN_SINGLE` + `SETTLE_ALL(tokenIn, amountIn)` + `TAKE_ALL(tokenOut, amountOutMinimum)`; `hookData = ""`.
 5. If `tokenOut == address(0)`: set `_expectingNative = true` (opens `receive()`).
@@ -34,7 +34,7 @@ Exact-input swap through one hookless V4 pool. Used for buys (stable → WETH / 
 6. Verify: tokenIn spent ≤ `amountIn` (`ExcessiveInput`); tokenOut received ≥ `amountOutMinimum` (`InsufficientOutput`), measured by balance delta.
 7. Emit `Swapped(..., 4)`. If `tokenOut == stableToken`, the received stable is supplied to Morpho (`MorphoDeposited`); idle stable already in the vault is not touched. Bought tokens / ETH stay idle in the vault.
 
-The bot buys with V4 in two txs: `morphoWithdraw(x)` then `swapExactInputV4(stableToken, …, x, …)` (there is no `withdrawAndSwapV4`, it is not in the spec).
+The bot buys with V4 in **one tx**: `swapExactInputV4(stableToken, tokenOut, fee, tickSpacing, x, minOut, deadline)` withdraws exactly `x` from Morpho and swaps it. Idle stable already in the vault is not used for a buy (put it back with `morphoDeposit`); Morpho short of `x` → reverts with Morpho's error. If the swap fails the whole tx reverts and the stable stays in Morpho.
 ### Security
 - **No operator calldata** (invariant 9): commands / actions are constants, every param comes from validated arguments.
 - **Output to the vault** (invariant 2): `TAKE_ALL` pays the UniversalRouter's `msg.sender`, i.e. always the vault. No recipient parameter exists.

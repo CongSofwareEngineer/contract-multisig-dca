@@ -33,6 +33,7 @@ No token parameter, so only the stable can enter (invariant #11). Allowance to M
 
 ## 3. morphoWithdraw
 `morphoWithdraw(uint256 amount)` — `onlyOperator whenNotPaused nonReentrant`. Withdraws exactly `amount` stable; `receiver` and `owner` are hardcoded `address(this)` (invariant #2). Emits `MorphoWithdrawn`. No approval needed (vault burns its own shares).
+Not needed for buys: `swapExactInputV3` / `swapExactInputV4` with `tokenIn == stableToken` withdraw exactly `amountIn` themselves (same internal `_withdrawFromMorpho`, same event) and ignore idle stable — see [swap-v3 §1](swap-v3.md#1-swapexactinputv3).
 
 ## 4. ChangeMorphoVault migration
 ### Purpose
@@ -75,6 +76,6 @@ Proposal `ChangeStableToken(address newStable, address newVault, address to)` / 
 - New stable already sitting idle in the vault stays idle until an operator calls `morphoDeposit`.
 
 ## Related
-- [swap-v3.md](swap-v3.md) — `withdrawAndSwapV3`, sell auto-deposit
+- [swap-v3.md](swap-v3.md) — buy pulls exact stable from Morpho (`swapExactInputV3` / `V4`), sell auto-deposit
 - [security-safety.md](security-safety.md) — WithdrawBatch pulling stable from Morpho, stable / tradable token split
 - [proposal-system.md](proposal-system.md) — proposal table
