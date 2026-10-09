@@ -1,5 +1,5 @@
 # Swap V4
-> Last updated: 2026-10-08
+> Last updated: 2026-10-09
 
 ## Overview
 Operator swaps through **Uniswap V4** pools, via the UniversalRouter + Permit2. Same rules as V3 (one side must be `stableToken`, output stays in the vault, a buy pulls exactly `amountIn` stable from Morpho in the same tx, a sell to the stable is supplied to Morpho), and the same pool whitelist: `(token, fee, tickSpacing)` must be one entry of `allowedPool` ([swap-v3 §3](swap-v3.md#3-pool-whitelist-allowedpool--shared-with-v4)), with `hooks` always `address(0)`. Unlike V3, V4 can trade **native ETH** (`address(0)`) once it is whitelisted in `allowedToken`.
@@ -23,7 +23,7 @@ Exact-input swap through one hookless V4 pool. Used for buys (stable → WETH / 
 `swapExactInputV4(address tokenIn, address tokenOut, uint24 fee, int24 tickSpacing, uint256 amountIn, uint256 amountOutMinimum, uint256 deadline)` — `onlyOperator whenNotPaused nonReentrant`, returns `amountOut`.
 ### Flow
 1. `tickSpacing >= 1` (else `PoolNotAllowed`: 0 is the V3 marker in `allowedPool` and must never unlock a V4 swap); `amountIn` and `amountOutMinimum` ≤ `uint128.max` (`AmountTooLarge`; V4 params are uint128 — never truncated).
-2. `_prepareSwap` (same as V3): one side is `stableToken`, the other in `allowedToken`, `amountIn > 0`, `amountOutMinimum > 0`, `block.timestamp <= deadline`, `_allowedPool[stableToken][token][fee][tickSpacing]` (`PoolNotAllowed`; entries are per stable). **Buy** (`tokenIn == stableToken`): only after every check, withdraw exactly `amountIn` from Morpho (receiver / owner = vault) and emit `MorphoWithdrawn` — one tx (there is no public `morphoWithdraw`).
+2. `_prepareSwap` (same as V3): one side is `stableToken`, the other in `allowedToken`, `amountIn > 0`, `amountOutMinimum > 0`, `block.timestamp <= deadline`, `_allowedPool[_poolId(token, fee, tickSpacing)]` (`PoolNotAllowed`; entries are per stable). **Buy** (`tokenIn == stableToken`): only after every check, withdraw exactly `amountIn` from Morpho (receiver / owner = vault) and emit `MorphoWithdrawn` — one tx (there is no public `morphoWithdraw`).
 3. Snapshot balances (`_balanceOf`: native ETH → `address(this).balance`); `amountIn <= balance(tokenIn)`.
 4. Build the input (`_buildV4SwapInput`): `PoolKey{currency0, currency1 = sorted(tokenIn, tokenOut), fee, tickSpacing, hooks: address(0)}`, `zeroForOne = tokenIn < tokenOut`; actions `SWAP_EXACT_IN_SINGLE` + `SETTLE_ALL(tokenIn, amountIn)` + `TAKE_ALL(tokenOut, amountOutMinimum)`; `hookData = ""`.
 5. If `tokenOut == address(0)`: set `_expectingNative = true` (opens `receive()`).

@@ -1,5 +1,5 @@
 # Morpho Integration
-> Last updated: 2026-10-08
+> Last updated: 2026-10-09
 
 ## Overview
 The vault has **one stablecoin**, `stableToken` (USDC today), kept separate from the tradable-token list. Idle stable always sits in a Morpho vault (ERC-4626: Vault V2 or MetaMorpho V1) to earn yield. **Only the stable goes to Morpho**. Bought tokens (WETH, cbBTC, native ETH) stay idle in the contract and are never staked (APR too low to be worth it). The contract simply supplies to / withdraws from the address stored in `morphoVault`. It does **not** validate that address on-chain (no factory or `asset()` check, owner decision). The address can only be changed by a threshold `ChangeMorphoVault` or `ChangeStableToken` proposal. The vault only pulls out exactly what it needs.
@@ -68,8 +68,8 @@ Proposal `ChangeStableToken(address newStable, address newVault, address to)` / 
 1. Checks (at propose and again at execute): `newStable`, `newVault != 0` (`ZeroAddress`); `newStable != stableToken` (`SameAddress`); `newVault != morphoVault` (`SameMorphoVault`); `newStable` not in `allowedToken` (`StableNotTradable`); `to` in `isWithdrawAddress` (`WithdrawAddressNotAllowed`).
 2. `redeem(all shares)` of the old Morpho vault → emit `MorphoWithdrawn`.
 3. Send **the whole old-stable balance** (redeemed + idle) to `to` → emit `Withdrawn`.
-4. Set `stableToken = newStable`, `morphoVault = newVault`, `stableChangedAt = block.timestamp` → emit `StableTokenChanged(..., swept)`. Every other pending proposal is now expired ([proposal-system §1 Edge cases](proposal-system.md#edge-cases)).
-5. Implicit: the pool whitelist is keyed by the stable, so **no pool is allowed for the new stable** until signers add entries with `SetAllowedPool` ([swap-v3 §3](swap-v3.md#3-pool-whitelist-allowedpool--shared-with-v4)). Swaps revert `PoolNotAllowed` until then.
+4. Set `stableToken = newStable`, `morphoVault = newVault`, `stableChangedAt = block.timestamp`, `++stableEpoch` → emit `StableTokenChanged(..., swept)`. Every other pending proposal is now expired ([proposal-system §1 Edge cases](proposal-system.md#edge-cases)).
+5. `++stableEpoch` kills every pool whitelist entry, so **no pool is allowed for the new stable** (nor for an old stable switched back to) until signers add entries with `SetAllowedPool` ([swap-v3 §3](swap-v3.md#3-pool-whitelist-allowedpool--shared-with-v4)). Swaps revert `PoolNotAllowed` until then.
 ### Security
 - The sweep happens **inside** the proposal rather than as a "balance must be 0" precondition. Otherwise anyone could block the change forever by donating 1 wei of old stable or calling `depositAndSupply`. Dust that arrives between propose and execute is simply swept too (`test_Proposal_ChangeStableTokenCannotBeGriefedByDust`).
 - Old stable only ever goes to a whitelisted withdraw address (invariant #4).

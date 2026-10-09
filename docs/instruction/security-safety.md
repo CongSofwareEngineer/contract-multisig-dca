@@ -1,5 +1,5 @@
 # Security & Safety
-> Last updated: 2026-10-08
+> Last updated: 2026-10-09
 
 ## Overview
 How the vault keeps funds safe even if the operator key is stolen.
@@ -32,7 +32,7 @@ Two separate lists (owner decision 2026-10-08):
 
 Rules:
 - Constructor `_tokens[]` = tradable tokens only (must not contain the stable); duplicates revert. `address(0)` is accepted (native ETH).
-- `AddToken` / `RemoveToken` proposals manage the tradable list. Any tradable token, including native ETH, can be removed. The stable is not in the list, so `RemoveToken(stable)` fails with `NotFound`.
+- `AddToken` / `RemoveToken` proposals manage the tradable list. Any tradable token, including native ETH, can be removed. The stable is not in the list, so `RemoveToken(stable)` fails with `NotFound`. `RemoveToken` also kills every pool whitelist entry of that token for good — re-adding it requires `SetAllowedPool` again ([swap-v3 §3](swap-v3.md#3-pool-whitelist-allowedpool--shared-with-v4)).
 - "Is this the stable?" is always an address compare against `stableToken`, never a lookup in `allowedToken`.
 - Swaps: one side must be `stableToken` (`PairNotAllowed` otherwise, so no token ↔ token), and the other side must be in `allowedToken` (`TokenNotAllowed`). `WithdrawBatch` accepts the stable or a whitelisted token.
 - Junk tokens transferred in are ignored: no loop over held tokens, no `balanceOf` / call on any address other than the stable and whitelisted tokens, no rescue function. A replaced stable becomes junk the same way.

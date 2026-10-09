@@ -38,7 +38,7 @@ abstract contract DCAVaultSwap is DCAVaultMorpho {
         if (block.timestamp > deadline) revert DeadlinePassed();
         // The exact pool (stable, other, fee, tickSpacing) must be whitelisted as one entry: the operator cannot
         // pick an unused fee / spacing combo where it could seed its own pool at a rigged price.
-        if (!_allowedPool[stable][other][fee][tickSpacing]) revert PoolNotAllowed();
+        if (!_allowedPool[_poolId(other, fee, tickSpacing)]) revert PoolNotAllowed();
 
         // Buy: the stable lives in Morpho, never idle — withdraw exactly what this swap sells.
         if (tokenIn == stable) {

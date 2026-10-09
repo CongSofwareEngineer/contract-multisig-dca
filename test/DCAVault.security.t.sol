@@ -140,6 +140,63 @@ contract DCAVaultSecurityTest is VaultTestBase {
         assertTrue(vault.allowedPool(address(weth), FEE_LOW, 1));
     }
 
+    /// @dev Switching back to a previous stable (USDC -> X -> USDC) must not revive the old USDC entries:
+    ///      their pools may have lost liquidity since they were vetted (cheap to manipulate with a leaked operator key).
+    function test_Security_ChangeStableTokenBackDoesNotReviveOldPools() public {
+        MockERC20 other = new MockERC20("New USD", "NUSD", 18);
+        _passProposal(
+            DCAVaultStorage.ProposalType.ChangeStableToken,
+            abi.encode(address(other), address(_newMorphoVault(other)), treasury)
+        );
+        vm.warp(block.timestamp + 1);
+        _passProposal(
+            DCAVaultStorage.ProposalType.ChangeStableToken,
+            abi.encode(address(usdc), address(_newMorphoVault(usdc)), treasury)
+        );
+        assertEq(vault.stableToken(), address(usdc));
+        assertEq(vault.stableEpoch(), 2);
+        assertFalse(vault.allowedPool(address(weth), FEE_LOW, 0), "old USDC V3 entry must stay dead");
+        assertFalse(vault.allowedPool(address(weth), FEE_LOW, TS_LOW), "old USDC V4 entry must stay dead");
+
+        vm.startPrank(operator);
+        vm.expectRevert(DCAVaultStorage.PoolNotAllowed.selector);
+        vault.swapExactInputV3(address(weth), address(usdc), FEE_LOW, 1 ether, 1, block.timestamp);
+        vm.expectRevert(DCAVaultStorage.PoolNotAllowed.selector);
+        vault.swapExactInputV4(address(weth), address(usdc), FEE_LOW, TS_LOW, 1 ether, 1, block.timestamp);
+        vm.stopPrank();
+
+        // Re-vetting works (no Duplicate from the dead entry).
+        vm.warp(block.timestamp + 1);
+        _passProposal(DCAVaultStorage.ProposalType.SetAllowedPool, abi.encode(address(weth), FEE_LOW, int24(0), true));
+        assertTrue(vault.allowedPool(address(weth), FEE_LOW, 0));
+    }
+
+    /// @dev RemoveToken kills the token's pool entries for good: a later AddToken alone opens no pool.
+    function test_Security_RemoveTokenThenAddTokenDoesNotRevivePools() public {
+        _passProposal(DCAVaultStorage.ProposalType.RemoveToken, abi.encode(address(weth)));
+        _passProposal(DCAVaultStorage.ProposalType.AddToken, abi.encode(address(weth)));
+        assertTrue(vault.allowedToken(address(weth)));
+        assertFalse(vault.allowedPool(address(weth), FEE_LOW, 0), "V3 entry must not come back");
+        assertFalse(vault.allowedPool(address(weth), FEE_LOW, TS_LOW), "V4 entry must not come back");
+        assertTrue(vault.allowedPool(address(cbbtc), FEE_LOW, TS_LOW), "other tokens' entries are untouched");
+
+        vm.startPrank(operator);
+        vm.expectRevert(DCAVaultStorage.PoolNotAllowed.selector);
+        vault.swapExactInputV3(address(weth), address(usdc), FEE_LOW, 1 ether, 1, block.timestamp);
+        vm.expectRevert(DCAVaultStorage.PoolNotAllowed.selector);
+        vault.swapExactInputV4(address(weth), address(usdc), FEE_LOW, TS_LOW, 1 ether, 1, block.timestamp);
+        vm.stopPrank();
+
+        // Removing the dead entry is NotFound; re-adding it is not Duplicate.
+        vm.prank(signer1);
+        uint256 id = vault.proposeSetAllowedPool(address(weth), FEE_LOW, TS_LOW, false);
+        vm.prank(signer2);
+        vm.expectRevert(DCAVaultStorage.NotFound.selector);
+        vault.approve(id);
+        _passProposal(DCAVaultStorage.ProposalType.SetAllowedPool, abi.encode(address(weth), FEE_LOW, TS_LOW, true));
+        assertTrue(vault.allowedPool(address(weth), FEE_LOW, TS_LOW));
+    }
+
     function test_Invariant1_OperatorCannotUseSignerFunctions() public {
         vm.startPrank(operator);
         vm.expectRevert(DCAVaultStorage.NotSigner.selector);

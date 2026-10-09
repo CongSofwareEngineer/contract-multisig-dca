@@ -104,14 +104,18 @@ abstract contract DCAVaultStorage is ReentrancyGuard {
     /// @dev Mirror of `allowedToken` so views can list whitelisted balances without ever
     ///      touching a non-whitelisted (possibly malicious) token.
     address[] internal _allowedTokenList;
-    /// @dev Pools the operator may swap through: `_allowedPool[stable][token][fee][tickSpacing]`
-    ///      (`tickSpacing == V3_POOL` = V3 pool, otherwise hookless V4 pool). The token, fee and tick spacing
-    ///      are whitelisted together as one entry, so the operator can never combine them into a pool the
-    ///      signers did not pick — e.g. a fresh, attacker-seeded pool with an unused fee / spacing combo.
-    ///      Keyed by the stable too: after `ChangeStableToken` every old entry stops matching, so (newStable, token)
-    ///      pools nobody vetted — possibly not created yet — never become swappable by accident.
-    ///      No on-chain list (contract size limit): the full set is rebuilt off-chain from `PoolAllowed` events.
-    mapping(address => mapping(address => mapping(uint24 => mapping(int24 => bool)))) internal _allowedPool;
+    /// @dev Pools the operator may swap through, keyed by `_poolId(token, fee, tickSpacing)` (`tickSpacing ==
+    ///      V3_POOL` = V3 pool, otherwise hookless V4 pool). The token, fee and tick spacing are whitelisted together
+    ///      as one entry, so the operator can never combine them into a pool the signers did not pick — e.g. a fresh,
+    ///      attacker-seeded pool with an unused fee / spacing combo.
+    ///      The id also includes `stableEpoch` and `_tokenEpoch[token]`, so `ChangeStableToken` drops every entry and
+    ///      `RemoveToken` drops that token's entries for good: switching back to an old stable (A -> B -> A) or
+    ///      re-adding a removed token never revives a stale entry whose pool may have lost its liquidity since.
+    ///      No on-chain list (contract size limit): the full set is rebuilt off-chain from `PoolAllowed` events
+    ///      (an entry is dead after a later `StableTokenChanged`, or a later `TokenAllowed(token, false)`).
+    mapping(bytes32 => bool) internal _allowedPool;
+    /// @dev Bumped by `RemoveToken`; part of `_poolId`, so it kills that token's pool entries.
+    mapping(address => uint256) internal _tokenEpoch;
 
     bool public paused;
     /// @dev True only while `swapExactInputV4` is waiting for native ETH output; `receive()` rejects ETH
@@ -122,6 +126,9 @@ abstract contract DCAVaultStorage is ReentrancyGuard {
     ///         otherwise open the unvetted newStable/WETH pool; a `ChangeMorphoVault` would point at an old-stable
     ///         vault).
     uint64 public stableChangedAt;
+    /// @notice Number of `ChangeStableToken` executed so far; part of every pool id, so each change drops all pool
+    ///         entries — even when switching back to a previous stable.
+    uint64 public stableEpoch;
 
     /// @dev Raw storage; `getProposal(id)` adds live vote count, threshold and expiry.
     mapping(uint256 => Proposal) public proposals;

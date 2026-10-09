@@ -160,11 +160,12 @@ Also:
 - **Operator safety limits = the pool whitelist `allowedPool` only.** One entry = one pool
   `(token, fee, tickSpacing)` vs the stable; `tickSpacing = 0` = V3 pool, `>= 1` = hookless
   V4 pool. Never split it back into independent fee / tick-spacing lists (the operator could
-  combine them into an attacker-created pool). Entries are keyed by the stable too
-  (`_allowedPool[stable][token][fee][tickSpacing]`), so `ChangeStableToken` drops them all.
+  combine them into an attacker-created pool). Entries are keyed by epochs
+  (`keccak256(stableEpoch, token, _tokenEpoch[token], fee, tickSpacing)`), so `ChangeStableToken` drops them all
+  (even when switching back to an old stable) and `RemoveToken` drops that token's for good.
   No per-tx or per-day caps, no TWAP check.
   Slippage is the bot's job via `amountOutMinimum` (contract only checks `> 0`).
-- **Contract size is ~634 B under the EIP-170 limit** (24,576 B). Run `forge build --sizes`
+- **Contract size is ~456 B under the EIP-170 limit** (24,576 B). Run `forge build --sizes`
   after any change; deploy fails on mainnet if it goes over.
 - **Pool whitelist in practice** (one side is always the stable; checked on a Base fork
   2026-10-08): V3 USDC/WETH `500`, V3 USDC/cbBTC `500`, V4 USDC/WETH `500/10` and

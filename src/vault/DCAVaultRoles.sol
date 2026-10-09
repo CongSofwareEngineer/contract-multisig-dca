@@ -23,12 +23,13 @@ abstract contract DCAVaultRoles is DCAVaultStorage {
     }
 
     /// @notice Whether the pool (`stableToken`, `token`, `fee`, `tickSpacing`) is whitelisted for operator swaps.
-    /// @dev Always reads the current stable: entries added under a previous stable do not count.
+    /// @dev Always reads the current stable epoch: entries added under a previous stable (even the same address
+    ///      before an A -> B -> A switch) or before the token was last removed do not count.
     /// @param token tradable token side of the pool (address(0) = native ETH)
     /// @param fee pool fee
     /// @param tickSpacing `V3_POOL` (0) for the V3 pool, otherwise the V4 tick spacing
     function allowedPool(address token, uint24 fee, int24 tickSpacing) external view returns (bool) {
-        return _allowedPool[stableToken][token][fee][tickSpacing];
+        return _allowedPool[_poolId(token, fee, tickSpacing)];
     }
 
     /// @notice Approvals needed to execute: ≥ 50% of signers, rounded up. 2→1, 3→2, 4→2, 5→3.
@@ -97,25 +98,24 @@ abstract contract DCAVaultRoles is DCAVaultStorage {
     function _removeToken(address token) internal {
         if (!allowedToken[token]) revert NotFound();
         allowedToken[token] = false;
+        ++_tokenEpoch[token]; // kills its pool entries: a later AddToken must re-vet every pool (SetAllowedPool)
         _removeFromArray(_allowedTokenList, token);
         emit TokenAllowed(token, false);
     }
 
     /// @dev Adds or removes one (token, fee, tickSpacing) pool entry. Adding does not require the token to be
     ///      in `allowedToken` yet (swaps check both), so AddToken and SetAllowedPool can be proposed in parallel.
-    ///      The entry is stored under the current `stableToken` (the pool's other side).
+    ///      The entry belongs to the current stable epoch and token epoch (see `_poolId`).
     function _setAllowedPool(address token, uint24 fee, int24 tickSpacing, bool allowed) internal {
-        address stable = stableToken;
-        mapping(int24 => bool) storage entry = _allowedPool[stable][token][fee];
+        bytes32 id = _poolId(token, fee, tickSpacing);
         if (allowed) {
             _checkPoolConfig(token, fee, tickSpacing);
-            if (entry[tickSpacing]) revert Duplicate();
-            entry[tickSpacing] = true;
-        } else {
-            if (!entry[tickSpacing]) revert NotFound();
-            entry[tickSpacing] = false;
+            if (_allowedPool[id]) revert Duplicate();
+        } else if (!_allowedPool[id]) {
+            revert NotFound();
         }
-        emit PoolAllowed(stable, token, fee, tickSpacing, allowed);
+        _allowedPool[id] = allowed;
+        emit PoolAllowed(stableToken, token, fee, tickSpacing, allowed);
     }
 
     /// @dev Static checks for a new pool entry (also run at propose time).
@@ -127,6 +127,12 @@ abstract contract DCAVaultRoles is DCAVaultStorage {
         if (tickSpacing < V3_POOL || tickSpacing > MAX_TICK_SPACING) revert InvalidTickSpacing();
         // SwapRouter02 cannot trade native ETH, so a V3 entry for it would be dead (and misleading).
         if (tickSpacing == V3_POOL && token == NATIVE) revert NativeNotSupported();
+    }
+
+    /// @dev Pool whitelist key. `stableEpoch` (not the stable address) so A -> B -> A does not revive old entries;
+    ///      `_tokenEpoch[token]` so RemoveToken -> AddToken does not either.
+    function _poolId(address token, uint24 fee, int24 tickSpacing) internal view returns (bytes32) {
+        return keccak256(abi.encode(stableEpoch, token, _tokenEpoch[token], fee, tickSpacing));
     }
 
     // ------------------------------------------------------------------
