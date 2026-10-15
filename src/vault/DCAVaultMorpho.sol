@@ -156,6 +156,9 @@ abstract contract DCAVaultMorpho is DCAVaultRoles {
         morphoVault = newVault;
         stableChangedAt = uint64(block.timestamp); // expires every pending proposal (see `_isExpired`)
         ++stableEpoch; // drops every pool entry, even if this stable is used again later (see `_poolId`)
+        // Cap / usage are in old-stable units (decimals may differ): block swaps until a new SetDailyVolumeCap.
+        _setDailyVolumeCap(0);
+        dailyVolumeUsed = 0;
         emit StableTokenChanged(oldStable, newStable, oldVault, newVault, swept);
     }
 

@@ -129,6 +129,25 @@ abstract contract DCAVaultRoles is DCAVaultStorage {
         if (tickSpacing == V3_POOL && token == NATIVE) revert NativeNotSupported();
     }
 
+    // ------------------------------------------------------------------
+    // Internal: operator daily volume cap
+    // ------------------------------------------------------------------
+
+    function _setDailyVolumeCap(uint256 cap) internal {
+        emit DailyVolumeCapChanged(dailyVolumeCap, cap);
+        dailyVolumeCap = cap;
+    }
+
+    /// @dev Adds `amount` (stable units) to today's swap volume; reverts past `dailyVolumeCap`. Counting both
+    ///      directions is what bounds a buy/sell churn loop, not just a one-way dump.
+    function _useDailyVolume(uint256 amount) internal {
+        uint256 day = block.timestamp / 1 days;
+        uint256 used = (day == volumeDay ? dailyVolumeUsed : 0) + amount;
+        if (used > dailyVolumeCap) revert DailyVolumeExceeded();
+        volumeDay = day;
+        dailyVolumeUsed = used;
+    }
+
     /// @dev Pool whitelist key. `stableEpoch` (not the stable address) so A -> B -> A does not revive old entries;
     ///      `_tokenEpoch[token]` so RemoveToken -> AddToken does not either.
     function _poolId(address token, uint24 fee, int24 tickSpacing) internal view returns (bytes32) {

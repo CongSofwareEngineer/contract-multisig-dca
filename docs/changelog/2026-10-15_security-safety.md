@@ -1,0 +1,12 @@
+# Security & Safety
+- **Date**: 2026-10-15
+- **Feature**: security-safety (→ docs/instruction/security-safety.md)
+- **Type**: Added, Changed
+- **Files**: `src/vault/DCAVaultStorage.sol`, `test/DCAVault.security.t.sol`, `DCA_VAULT_SPEC.md`, `CLAUDE.md`
+- **What**:
+  - **New invariants**: #14 operator swap volume per UTC day ≤ `dailyVolumeCap` (buys + sells, V3 + V4); #15 `approve(id, pType)` rejects a wrong proposal type.
+  - **Accepted risk #1 (operator sandwich)**: now bounded by the daily volume cap; fee churn documented as the zero-capital variant it also bounds.
+  - **Role modifiers**: `onlySigner` / `onlyOperator` bodies moved into internal `_checkSigner` / `_checkOperator` (same checks, same order: 7702 check, then role) — modifiers are inlined into every function and the new logic would otherwise exceed EIP-170.
+- **Tests**: added `test_Security_OperatorChurnBoundedByDailyCap`, `test_Security_ApproveRejectsSwappedProposalType`; all existing role / 7702 tests unchanged and passing. `forge test`: 235 passed, 0 failed.
+- **Why**:
+  - Findings of the 2026-10-15 security review (fee churn by a leaked operator key; blind `approve(id)`), fixed on owner request.

@@ -39,6 +39,7 @@ contract DCAVault is DCAVaultSwapV3, DCAVaultSwapV4, DCAVaultProposals {
     /// @param _tokens initial tradable-token whitelist (e.g. WETH, cbBTC; address(0) = native ETH for V4)
     /// @param _pools initial pool whitelist, one (token, fee, tickSpacing) entry per pool;
     ///        tickSpacing `V3_POOL` (0) = V3 pool, >= 1 = hookless V4 pool (e.g. (WETH, 500, 0), (WETH, 500, 10))
+    /// @param _dailyVolumeCap max operator swap volume per UTC day, raw stable units (deploy default 600e6 = 600 USDC)
     constructor(
         address _stableToken,
         address _uniV3Router,
@@ -49,7 +50,8 @@ contract DCAVault is DCAVaultSwapV3, DCAVaultSwapV4, DCAVaultProposals {
         address[] memory _operators,
         address[] memory _withdrawAddresses,
         address[] memory _tokens,
-        PoolConfig[] memory _pools
+        PoolConfig[] memory _pools,
+        uint256 _dailyVolumeCap
     ) DCAVaultStorage(_stableToken, _uniV3Router, _permit2, _universalRouter, _morphoVault) {
         if (_signers.length < MIN_SIGNERS) revert TooFewSigners();
 
@@ -69,5 +71,6 @@ contract DCAVault is DCAVaultSwapV3, DCAVaultSwapV4, DCAVaultProposals {
         for (uint256 i; i < _pools.length; ++i) {
             _setAllowedPool(_pools[i].token, _pools[i].fee, _pools[i].tickSpacing, true); // reverts on duplicate
         }
+        _setDailyVolumeCap(_dailyVolumeCap);
     }
 }

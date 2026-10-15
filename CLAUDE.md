@@ -129,6 +129,9 @@ These are the §10 invariants of the spec. Every one needs a test in
 13. An EIP-7702 delegated EOA (code starts with `0xef`) **cannot call any state-changing
     function** (`DelegatedCaller`) — it would let a leaked operator key bundle flash loan +
     pool manipulation + vault swap into one tx. Plain contracts (e.g. a Safe) are unaffected.
+14. Operator swap volume (stable side, buys + sells, V3 + V4) per UTC day **never exceeds
+    `dailyVolumeCap`** (`DailyVolumeExceeded`). Deploy default 600 USDC (`600e6`).
+15. `approve(id, pType)` reverts `ProposalTypeMismatch` unless `pType` is the stored type of `id`.
 
 Also:
 - There is **no "approve arbitrary token/spender" proposal.** Standing approvals must not
@@ -153,19 +156,26 @@ Also:
   }
   ```
   The vault checks the deadline itself: `require(block.timestamp <= deadline)`.
+- **`approve(id, pType)`** takes the expected `ProposalType` (enum value, e.g. `1` = AddWithdrawAddress)
+  so a hardware wallet shows what is being signed; swaps are operator calls and have no type.
 - **Helper proposal functions must call the internal `_propose(...)`**, never
   `this.propose(...)` — an external self-call makes `msg.sender` the contract itself.
 - **Threshold** = `(signerCount + 1) / 2` (≥ 50%, rounded up), in its own
   `getThreshold()` function. No extra logic. 2→1, 3→2, 4→2, 5→3.
-- **Operator safety limits = the pool whitelist `allowedPool` only.** One entry = one pool
+- **Operator safety limits = the pool whitelist `allowedPool` + the daily volume cap.**
+  `dailyVolumeCap` (raw stable units, changed via `SetDailyVolumeCap`, reset to 0 by `ChangeStableToken`)
+  bounds the stable side of all swaps per UTC day, counting **both** buys and sells — that is what stops
+  a leaked operator key from churning buy/sell to burn the vault through pool fees.
+  Pool whitelist: One entry = one pool
   `(token, fee, tickSpacing)` vs the stable; `tickSpacing = 0` = V3 pool, `>= 1` = hookless
   V4 pool. Never split it back into independent fee / tick-spacing lists (the operator could
   combine them into an attacker-created pool). Entries are keyed by epochs
   (`keccak256(stableEpoch, token, _tokenEpoch[token], fee, tickSpacing)`), so `ChangeStableToken` drops them all
   (even when switching back to an old stable) and `RemoveToken` drops that token's for good.
-  No per-tx or per-day caps, no TWAP check.
+  No per-tx cap, no TWAP check.
   Slippage is the bot's job via `amountOutMinimum` (contract only checks `> 0`).
-- **Contract size is ~456 B under the EIP-170 limit** (24,576 B). Run `forge build --sizes`
+- **Contract size is ~837 B under the EIP-170 limit** (24,576 B). Modifier bodies live in internal
+  functions (`_checkSigner` / `_checkOperator`) because modifiers are inlined into every function. Run `forge build --sizes`
   after any change; deploy fails on mainnet if it goes over.
 - **Pool whitelist in practice** (one side is always the stable; checked on a Base fork
   2026-10-08): V3 USDC/WETH `500`, V3 USDC/cbBTC `500`, V4 USDC/WETH `500/10` and

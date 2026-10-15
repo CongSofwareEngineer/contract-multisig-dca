@@ -29,7 +29,8 @@ abstract contract DCAVaultStorage is ReentrancyGuard {
         ChangeUniV3Router,
         ChangePermit2,
         ChangeUniversalRouter,
-        ChangeStableToken
+        ChangeStableToken,
+        SetDailyVolumeCap
     }
 
     /// @notice One whitelisted pool: the stable paired with `token`. `tickSpacing == V3_POOL` (0) means the
@@ -130,6 +131,16 @@ abstract contract DCAVaultStorage is ReentrancyGuard {
     ///         entries — even when switching back to a previous stable.
     uint64 public stableEpoch;
 
+    /// @notice Max stable volume (raw stable units, e.g. 600e6 = 600 USDC) operator swaps may move per UTC day,
+    ///         buys (stable in) and sells (stable out) combined. Caps what a leaked operator key can burn through
+    ///         sandwiches or fee churn. Changed only via `SetDailyVolumeCap`; reset to 0 by `ChangeStableToken`
+    ///         (the new stable may have other decimals), so swaps stay blocked until signers set a new cap.
+    uint256 public dailyVolumeCap;
+    /// @notice UTC day (`block.timestamp / 1 days`) that `dailyVolumeUsed` belongs to.
+    uint256 public volumeDay;
+    /// @notice Stable volume already used by swaps on `volumeDay`.
+    uint256 public dailyVolumeUsed;
+
     /// @dev Raw storage; `getProposal(id)` adds live vote count, threshold and expiry.
     mapping(uint256 => Proposal) public proposals;
     mapping(uint256 => mapping(address => bool)) public hasApproved;
@@ -172,6 +183,7 @@ abstract contract DCAVaultStorage is ReentrancyGuard {
     );
     event TokenAllowed(address token, bool allowed);
     event PoolAllowed(address stable, address token, uint24 fee, int24 tickSpacing, bool allowed);
+    event DailyVolumeCapChanged(uint256 oldCap, uint256 newCap);
     event Paused(address indexed by);
     event Unpaused();
 
@@ -215,20 +227,22 @@ abstract contract DCAVaultStorage is ReentrancyGuard {
     error AlreadyApproved();
     error AlreadyVoted();
     error DelegatedCaller();
+    error DailyVolumeExceeded();
+    error ProposalTypeMismatch();
 
     // ------------------------------------------------------------------
     // Modifiers
     // ------------------------------------------------------------------
 
+    // Bodies live in internal functions: modifiers are inlined into every function (~17 signer entry points),
+    // and the contract sits right at the EIP-170 size limit.
     modifier onlySigner() {
-        _checkNotDelegated();
-        if (!isSigner[msg.sender]) revert NotSigner();
+        _checkSigner();
         _;
     }
 
     modifier onlyOperator() {
-        _checkNotDelegated();
-        if (!isOperator[msg.sender]) revert NotOperator();
+        _checkOperator();
         _;
     }
 
@@ -274,6 +288,16 @@ abstract contract DCAVaultStorage is ReentrancyGuard {
     // ------------------------------------------------------------------
     // Internal
     // ------------------------------------------------------------------
+
+    function _checkSigner() internal view {
+        _checkNotDelegated();
+        if (!isSigner[msg.sender]) revert NotSigner();
+    }
+
+    function _checkOperator() internal view {
+        _checkNotDelegated();
+        if (!isOperator[msg.sender]) revert NotOperator();
+    }
 
     /// @dev Reverts if the caller is an EIP-7702 delegated EOA (code = 0xef0100 || impl). With 7702 a leaked
     ///      operator key can run its own code as `msg.sender == operator` and bundle flash loan -> push the pool

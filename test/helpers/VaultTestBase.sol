@@ -35,6 +35,10 @@ abstract contract VaultTestBase is Test {
     uint24 internal constant FEE_MED = 3000;
     int24 internal constant TS_LOW = 10;
     int24 internal constant TS_MED = 60;
+    /// @dev Large cap so tests not about the cap never hit it; cap tests set their own via `SetDailyVolumeCap`.
+    uint256 internal constant DAILY_CAP = 1_000_000_000e6;
+    /// @dev Storage slot of `DCAVaultStorage.proposals` (`forge inspect DCAVault storageLayout`).
+    uint256 internal constant PROPOSALS_SLOT = 18;
 
     function setUp() public virtual {
         usdc = new MockERC20("USD Coin", "USDC", 6);
@@ -74,7 +78,17 @@ abstract contract VaultTestBase is Test {
         tokens[0] = address(weth);
         tokens[1] = address(cbbtc);
         return new DCAVault(
-            address(usdc), address(router), permit2, universalRouter, address(morpho), s, o, w, tokens, _pools()
+            address(usdc),
+            address(router),
+            permit2,
+            universalRouter,
+            address(morpho),
+            s,
+            o,
+            w,
+            tokens,
+            _pools(),
+            DAILY_CAP
         );
     }
 
@@ -145,7 +159,15 @@ abstract contract VaultTestBase is Test {
         vm.prank(signer1);
         id = vault.propose(t, data);
         vm.prank(signer2);
-        vault.approve(id);
+        vault.approve(id, _typeOf(id));
+    }
+
+    /// @dev Stored type of proposal `id` (0 = WithdrawBatch for a missing id), read with `vm.load` so it does not
+    ///      consume a pending `vm.prank` — lets `vm.prank(s); vault.approve(id, _typeOf(id));` stay one call.
+    ///      `test_TypeOfHelper_MatchesGetProposal` guards the slot.
+    function _typeOf(uint256 id) internal view returns (DCAVaultStorage.ProposalType) {
+        bytes32 slot = keccak256(abi.encode(id, PROPOSALS_SLOT)); // pType is alone in the struct's first slot
+        return DCAVaultStorage.ProposalType(uint8(uint256(vm.load(address(vault), slot))));
     }
 
     function _assertNoAllowances() internal view {

@@ -1,5 +1,5 @@
 # Proposal System
-> Last updated: 2026-10-08
+> Last updated: 2026-10-15
 
 ## Overview
 Every signer action except `pause()` goes through a proposal: create → collect votes → auto-execute when valid votes ≥ threshold.
@@ -14,20 +14,20 @@ Sub-logics:
 - Storage: `proposals[id]` (`pType, data, proposer, createdAt, executed, cancelled`), `hasApproved[id][signer]`, `hasRejected[id][signer]`, `proposalCount`.
 - Constant: `PROPOSAL_TTL = 7 days`.
 - Events: `ProposalCreated(id, pType, proposer)`, `ProposalApproved(id, signer)`, `ProposalRejected(id, signer)`, `ProposalExecuted(id)`, `ProposalCancelled(id)`.
-- Errors: `ProposalNotFound`, `ProposalAlreadyExecuted`, `ProposalIsCancelled`, `ProposalExpired`, `AlreadyApproved`, `AlreadyVoted`, `NotProposer`.
+- Errors: `ProposalNotFound`, `ProposalAlreadyExecuted`, `ProposalIsCancelled`, `ProposalExpired`, `AlreadyApproved`, `AlreadyVoted`, `NotProposer`, `ProposalTypeMismatch`.
 - Functions `propose`, `approve`, helpers are `onlySigner nonReentrant` (execution may call Morpho / tokens). `reject` and `cancel` are `onlySigner` (no external calls). Every state-changing proposal function checks the signer role — a removed signer has no power left over any proposal, including their own.
 
 ## 1. Lifecycle
 ### Entry points
 - `propose(ProposalType, bytes data)` → id. Proposer auto-approves.
-- `approve(id)` — any signer, once.
+- `approve(id, pType)` — any signer, once. `pType` = the `ProposalType` the signer expects (enum number, see §3); it must equal the stored type or the call reverts `ProposalTypeMismatch`. The hardware wallet then shows e.g. `approve(12, 1)` = "approve #12, an AddWithdrawAddress" instead of a bare id, and a compromised signer who front-runs to put a different type at the id the others were told to approve gets nothing (`test_Security_ApproveRejectsSwappedProposalType`). Only the **type** is bound, not the payload: before approving, still decode `getProposal(id).data` (e.g. which address an `AddWithdrawAddress` adds). Swaps (`swapExactInputV3/V4`) are operator calls, never voted on, so they have no type.
 - `reject(id)` — any signer, once (`onlySigner`); a signer votes approve **or** reject, never both.
 - `cancel(id)` — `onlySigner`; only the proposer **while still a signer**, only before execution (`NotSigner` / `NotProposer`).
 - `getRejections(id)` → valid rejection count.
 - `getProposal(id)` → `(pType, data, validApprovals, threshold, executed, cancelled, expired)`.
 ### Flow
 1. `_propose` runs `_validate(pType, data)` (decodes payload, rejects obviously invalid input), stores the proposal with id `++proposalCount` (**ids start at 1**), emits `ProposalCreated`, then calls `_approve`. It never touches other pending proposals.
-2. `_approve` checks (`_requirePending`): exists, not executed, not cancelled, not expired; then sender has not approved (`AlreadyApproved`) or rejected (`AlreadyVoted`). Records vote, emits `ProposalApproved`.
+2. External `approve` first checks `proposals[id].pType == pType` (`ProposalTypeMismatch`; a missing id has type 0 and then fails `ProposalNotFound`). `_approve` (also run by `_propose` for the proposer, without the type check) checks (`_requirePending`): exists, not executed, not cancelled, not expired; then sender has not approved (`AlreadyApproved`) or rejected (`AlreadyVoted`). Records vote, emits `ProposalApproved`.
 3. Re-count valid votes; if ≥ `getThreshold()`: set `executed = true` **before** any external call, dispatch to the handler, emit `ProposalExecuted`.
 4. `reject(id)`: same `_requirePending` checks, sender has not voted (`AlreadyVoted`). Records rejection, emits `ProposalRejected`. If valid rejections ≥ `getThreshold()`: `cancelled = true`, emit `ProposalCancelled`.
 5. If the handler reverts, the whole approve tx reverts — the vote is not recorded and the proposal stays pending (can be retried later while not expired).
@@ -65,14 +65,16 @@ Each handler re-validates against live state at execute time (state may have cha
 | `ChangeUniV3Router` | `address newRouter` | ≠ 0, ≠ current (`SameAddress`, propose + execute); not validated on-chain | [swap-v3 §5](swap-v3.md#5-changing-the-router-changeuniv3router) |
 | `ChangePermit2` | `address` | ≠ 0, ≠ current | [swap-v4 §3](swap-v4.md#3-changing-permit2--universalrouter) |
 | `ChangeUniversalRouter` | `address` | ≠ 0, ≠ current | same |
-| `ChangeStableToken` | `(address newStable, address newVault, address to)` | non-zero; new ≠ current stable / vault; `newStable` not tradable; `to` whitelisted. Sweeps all old stable to `to` first | [morpho-integration §5](morpho-integration.md#5-changestabletoken) |
+| `ChangeStableToken` | `(address newStable, address newVault, address to)` | non-zero; new ≠ current stable / vault; `newStable` not tradable; `to` whitelisted. Sweeps all old stable to `to` first; resets `dailyVolumeCap` to 0 | [morpho-integration §5](morpho-integration.md#5-changestabletoken) |
 
-16 types; `SetAllowedPool` = 10, `Unpause` = 11, then the three `Change*` protocol-address types and `ChangeStableToken` (= 15). Off-chain tooling must use these values. `ChangeMorphoVault` and the three `Change*` types reject the current address already at propose time (`SameMorphoVault` / `SameAddress`); execute re-checks (two pending proposals for the same new address → the second reverts). `ChangeStableToken` swaps the stable and its Morpho vault after sweeping all old stable to `to`.
+| `SetDailyVolumeCap` | `uint256 cap` | exactly 32 bytes (`BadArrayLength`); any value, `0` = no swaps | [swap-v3 §6](swap-v3.md#6-daily-volume-cap-dailyvolumecap--shared-with-v4) |
+
+17 types — the number is what signers pass to `approve(id, pType)`: `WithdrawBatch` = 0, `AddWithdrawAddress` = 1, `RemoveWithdrawAddress` = 2, `AddSigner` = 3, `RemoveSigner` = 4, `AddOperator` = 5, `RemoveOperator` = 6, `ChangeMorphoVault` = 7, `AddToken` = 8, `RemoveToken` = 9, `SetAllowedPool` = 10, `Unpause` = 11, `ChangeUniV3Router` = 12, `ChangePermit2` = 13, `ChangeUniversalRouter` = 14, `ChangeStableToken` = 15, `SetDailyVolumeCap` = 16. Off-chain tooling must use these values. `ChangeMorphoVault` and the three `Change*` types reject the current address already at propose time (`SameMorphoVault` / `SameAddress`); execute re-checks (two pending proposals for the same new address → the second reverts). `ChangeStableToken` swaps the stable and its Morpho vault after sweeping all old stable to `to`.
 
 There is **no** proposal that approves arbitrary tokens / spenders.
 
 ## 4. Helper `proposeXxx` functions
-`proposeWithdrawBatch`, `proposeAddWithdrawAddress`, `proposeRemoveWithdrawAddress`, `proposeAddSigner`, `proposeRemoveSigner`, `proposeAddOperator`, `proposeRemoveOperator`, `proposeChangeMorphoVault`, `proposeAddToken`, `proposeRemoveToken`, `proposeSetAllowedPool`, `proposeUnpause`, `proposeChangeUniV3Router`, `proposeChangePermit2`, `proposeChangeUniversalRouter`, `proposeChangeStableToken`.
+`proposeWithdrawBatch`, `proposeAddWithdrawAddress`, `proposeRemoveWithdrawAddress`, `proposeAddSigner`, `proposeRemoveSigner`, `proposeAddOperator`, `proposeRemoveOperator`, `proposeChangeMorphoVault`, `proposeAddToken`, `proposeRemoveToken`, `proposeSetAllowedPool`, `proposeUnpause`, `proposeChangeUniV3Router`, `proposeChangePermit2`, `proposeChangeUniversalRouter`, `proposeChangeStableToken`, `proposeSetDailyVolumeCap`.
 They ABI-encode the payload and call internal `_propose` — never `this.propose()`, which would make `msg.sender` the vault itself (tested: `proposer` is the calling signer).
 
 ## Related

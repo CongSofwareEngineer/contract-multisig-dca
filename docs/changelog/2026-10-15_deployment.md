@@ -1,0 +1,12 @@
+# Deployment
+- **Date**: 2026-10-15
+- **Feature**: deployment (→ docs/instruction/deployment.md)
+- **Type**: Changed
+- **Files**: `src/DCAVault.sol`, `script/Deploy.s.sol`, `.env.example`, `test/helpers/VaultTestBase.sol`, `test/DCAVault.t.sol`, `test/DCAVault.security.t.sol`, `test/DCAVault.fork.t.sol`
+- **What**:
+  - **Constructor**: new last argument `uint256 _dailyVolumeCap` (raw stable units).
+  - **Deploy script**: optional env `DAILY_VOLUME_CAP`; unset → `600 * 10**decimals(STABLE_TOKEN)` = 600 USDC. Printed in the dry-run log. Post-deploy checklist checks `dailyVolumeCap()`.
+  - **Size**: runtime 23,739 B, 837 B under EIP-170 (was 456 B) after moving modifier bodies into internal functions; `optimizer_runs` unchanged (200).
+- **Tests**: every `new DCAVault(...)` in tests passes a cap. `forge build --sizes` OK; `forge test`: 235 passed, 0 failed.
+- **Why**:
+  - Owner request: daily volume cap with a $600 default ([swap-v3](2026-10-15_swap-v3.md)).

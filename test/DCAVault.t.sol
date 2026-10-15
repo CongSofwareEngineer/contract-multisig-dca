@@ -84,7 +84,8 @@ contract DCAVaultTest is VaultTestBase {
             _addrs(operator),
             _addrs(treasury),
             _addrs(address(weth)),
-            new DCAVaultStorage.PoolConfig[](0)
+            new DCAVaultStorage.PoolConfig[](0),
+            DAILY_CAP
         );
     }
 
@@ -158,7 +159,8 @@ contract DCAVaultTest is VaultTestBase {
             _addrs(operator),
             _addrs(treasury),
             tokens,
-            pools
+            pools,
+            DAILY_CAP
         );
     }
 
@@ -667,7 +669,7 @@ contract DCAVaultTest is VaultTestBase {
         vm.prank(signer2);
         vm.expectEmit(true, false, false, false, address(vault));
         emit DCAVaultStorage.ProposalExecuted(id);
-        vault.approve(id);
+        vault.approve(id, _typeOf(id));
         assertTrue(vault.isOperator(op2));
     }
 
@@ -690,7 +692,7 @@ contract DCAVaultTest is VaultTestBase {
         uint256 id = vault.proposeAddOperator(makeAddr("x"));
         vm.prank(attacker);
         vm.expectRevert(DCAVaultStorage.NotSigner.selector);
-        vault.approve(id);
+        vault.approve(id, _typeOf(id));
     }
 
     function test_Revert_Approve_Twice() public {
@@ -698,13 +700,13 @@ contract DCAVaultTest is VaultTestBase {
         uint256 id = vault.proposeAddOperator(makeAddr("x"));
         vm.prank(signer1);
         vm.expectRevert(DCAVaultStorage.AlreadyApproved.selector);
-        vault.approve(id);
+        vault.approve(id, _typeOf(id));
     }
 
     function test_Revert_Approve_NonExistent() public {
         vm.prank(signer1);
         vm.expectRevert(DCAVaultStorage.ProposalNotFound.selector);
-        vault.approve(42);
+        vault.approve(42, _typeOf(42));
     }
 
     function test_Cancel_ByProposer() public {
@@ -716,7 +718,7 @@ contract DCAVaultTest is VaultTestBase {
         assertTrue(cancelled);
         vm.prank(signer2);
         vm.expectRevert(DCAVaultStorage.ProposalIsCancelled.selector);
-        vault.approve(id);
+        vault.approve(id, _typeOf(id));
     }
 
     function test_Revert_Cancel_NotProposer() public {
@@ -733,7 +735,7 @@ contract DCAVaultTest is VaultTestBase {
         vm.prank(signer2);
         uint256 rm = vault.proposeRemoveSigner(signer1);
         vm.prank(signer3);
-        vault.approve(rm);
+        vault.approve(rm, _typeOf(rm));
 
         vm.prank(signer1);
         vm.expectRevert(DCAVaultStorage.NotSigner.selector);
@@ -757,7 +759,7 @@ contract DCAVaultTest is VaultTestBase {
         assertTrue(expired);
         vm.prank(signer2);
         vm.expectRevert(DCAVaultStorage.ProposalExpired.selector);
-        vault.approve(id);
+        vault.approve(id, _typeOf(id));
     }
 
     function test_Approve_ExactlySevenDaysStillValid() public {
@@ -766,7 +768,7 @@ contract DCAVaultTest is VaultTestBase {
         uint256 id = vault.proposeAddOperator(x);
         vm.warp(block.timestamp + 7 days);
         vm.prank(signer2);
-        vault.approve(id);
+        vault.approve(id, _typeOf(id));
         assertTrue(vault.isOperator(x));
     }
 
@@ -774,7 +776,7 @@ contract DCAVaultTest is VaultTestBase {
         uint256 id = _passProposal(DCAVaultStorage.ProposalType.AddOperator, abi.encode(makeAddr("x")));
         vm.prank(signer3);
         vm.expectRevert(DCAVaultStorage.ProposalAlreadyExecuted.selector);
-        vault.approve(id);
+        vault.approve(id, _typeOf(id));
     }
 
     function test_Revert_Propose_MalformedData() public {
@@ -828,7 +830,7 @@ contract DCAVaultTest is VaultTestBase {
         vault.reject(id);
         vm.prank(signer2);
         vm.expectRevert(DCAVaultStorage.ProposalIsCancelled.selector);
-        vault.approve(id);
+        vault.approve(id, _typeOf(id));
     }
 
     /// @dev A new proposal never touches pending ones (no single-signer cancel by spamming proposals).
@@ -840,7 +842,7 @@ contract DCAVaultTest is VaultTestBase {
         (,,,,, bool cancelled,) = vault.getProposal(a);
         assertFalse(cancelled);
         vm.prank(signer3);
-        vault.approve(a);
+        vault.approve(a, _typeOf(a));
         assertTrue(vault.isOperator(makeAddr("x")));
     }
 
@@ -893,7 +895,7 @@ contract DCAVaultTest is VaultTestBase {
         vm.startPrank(signer2);
         vault.reject(id);
         vm.expectRevert(DCAVaultStorage.AlreadyVoted.selector);
-        vault.approve(id);
+        vault.approve(id, _typeOf(id));
         vm.stopPrank();
     }
 
@@ -1009,7 +1011,7 @@ contract DCAVaultTest is VaultTestBase {
         uint256 id = vault.proposeRemoveToken(address(usdc));
         vm.prank(signer2);
         vm.expectRevert(DCAVaultStorage.NotFound.selector);
-        vault.approve(id);
+        vault.approve(id, _typeOf(id));
         assertEq(vault.stableToken(), address(usdc));
     }
 
@@ -1028,7 +1030,7 @@ contract DCAVaultTest is VaultTestBase {
         vm.prank(signer2);
         vm.expectEmit(false, false, false, true, address(vault));
         emit DCAVaultStorage.PoolAllowed(address(usdc), address(weth), 100, 1, true);
-        vault.approve(id);
+        vault.approve(id, _typeOf(id));
         assertTrue(vault.allowedPool(address(weth), 100, 1));
 
         _deposit(1e6);
@@ -1042,7 +1044,7 @@ contract DCAVaultTest is VaultTestBase {
         vm.prank(signer2);
         vm.expectEmit(false, false, false, true, address(vault));
         emit DCAVaultStorage.PoolAllowed(address(usdc), address(weth), FEE_LOW, TS_LOW, false);
-        vault.approve(id);
+        vault.approve(id, _typeOf(id));
         assertFalse(vault.allowedPool(address(weth), FEE_LOW, TS_LOW));
         _deposit(1e6);
         vm.prank(operator);
@@ -1058,13 +1060,13 @@ contract DCAVaultTest is VaultTestBase {
         uint256 id = vault.proposeSetAllowedPool(address(weth), FEE_LOW, TS_LOW, true);
         vm.prank(signer2);
         vm.expectRevert(DCAVaultStorage.Duplicate.selector);
-        vault.approve(id);
+        vault.approve(id, _typeOf(id));
 
         vm.prank(signer1);
         id = vault.proposeSetAllowedPool(address(weth), FEE_LOW, TS_MED, false);
         vm.prank(signer2);
         vm.expectRevert(DCAVaultStorage.NotFound.selector);
-        vault.approve(id);
+        vault.approve(id, _typeOf(id));
     }
 
     function test_Revert_Proposal_SetAllowedPoolInvalid() public {
@@ -1100,7 +1102,7 @@ contract DCAVaultTest is VaultTestBase {
         vm.prank(signer2);
         vm.expectEmit(false, false, false, true, address(vault));
         emit DCAVaultStorage.MorphoVaultChanged(address(morpho), address(newVault), 1005e6);
-        vault.approve(id);
+        vault.approve(id, _typeOf(id));
 
         assertEq(vault.morphoVault(), address(newVault));
         assertEq(morpho.balanceOf(address(vault)), 0);
@@ -1118,10 +1120,10 @@ contract DCAVaultTest is VaultTestBase {
         vm.prank(signer3);
         uint256 b = vault.proposeChangeMorphoVault(address(newVault));
         vm.prank(signer2);
-        vault.approve(a);
+        vault.approve(a, _typeOf(a));
         vm.prank(signer2);
         vm.expectRevert(DCAVaultStorage.SameMorphoVault.selector);
-        vault.approve(b);
+        vault.approve(b, _typeOf(b));
     }
 
     // =================================================================== protocol address changes
@@ -1136,7 +1138,7 @@ contract DCAVaultTest is VaultTestBase {
         vm.prank(signer2);
         vm.expectEmit(false, false, false, true, address(vault));
         emit DCAVaultStorage.UniV3RouterChanged(address(router), address(newRouter));
-        vault.approve(id);
+        vault.approve(id, _typeOf(id));
         assertEq(vault.uniV3Router(), address(newRouter));
 
         _deposit(100e6);
@@ -1155,7 +1157,7 @@ contract DCAVaultTest is VaultTestBase {
         vm.prank(signer2);
         vm.expectEmit(false, false, false, true, address(vault));
         emit DCAVaultStorage.Permit2Changed(permit2, newPermit2);
-        vault.approve(id);
+        vault.approve(id, _typeOf(id));
         assertEq(vault.permit2(), newPermit2);
     }
 
@@ -1166,7 +1168,7 @@ contract DCAVaultTest is VaultTestBase {
         vm.prank(signer2);
         vm.expectEmit(false, false, false, true, address(vault));
         emit DCAVaultStorage.UniversalRouterChanged(universalRouter, newUr);
-        vault.approve(id);
+        vault.approve(id, _typeOf(id));
         assertEq(vault.universalRouter(), newUr);
     }
 
@@ -1202,10 +1204,10 @@ contract DCAVaultTest is VaultTestBase {
         vm.prank(signer3);
         uint256 b = vault.proposeChangeUniV3Router(newRouter);
         vm.prank(signer2);
-        vault.approve(a);
+        vault.approve(a, _typeOf(a));
         vm.prank(signer2);
         vm.expectRevert(DCAVaultStorage.SameAddress.selector);
-        vault.approve(b);
+        vault.approve(b, _typeOf(b));
     }
 
     // =================================================================== WithdrawBatch
@@ -1221,7 +1223,7 @@ contract DCAVaultTest is VaultTestBase {
         vm.prank(signer1);
         uint256 id = vault.proposeWithdrawBatch(tokens, amounts, treasury);
         vm.prank(signer2);
-        vault.approve(id);
+        vault.approve(id, _typeOf(id));
 
         assertEq(weth.balanceOf(treasury), 1 ether);
         assertEq(weth.balanceOf(address(vault)), 1 ether);
@@ -1342,7 +1344,7 @@ contract DCAVaultTest is VaultTestBase {
         uint256 id = vault.proposeWithdrawBatch(_addrs(address(weth), address(cbbtc)), amounts, treasury);
         vm.prank(signer2);
         vm.expectRevert(DCAVaultStorage.InsufficientBalance.selector);
-        vault.approve(id);
+        vault.approve(id, _typeOf(id));
     }
 
     function test_Revert_WithdrawBatch_ToNotWhitelisted() public {
@@ -1381,7 +1383,7 @@ contract DCAVaultTest is VaultTestBase {
         uint256 id = vault.proposeWithdrawBatch(_addrs(address(weth)), amounts, treasury);
         vm.prank(signer2);
         vm.expectRevert(DCAVaultStorage.InsufficientBalance.selector);
-        vault.approve(id);
+        vault.approve(id, _typeOf(id));
     }
 
     function test_Revert_WithdrawBatch_AddressRemovedBeforeExecute() public {
@@ -1393,7 +1395,7 @@ contract DCAVaultTest is VaultTestBase {
         _passProposal(DCAVaultStorage.ProposalType.RemoveWithdrawAddress, abi.encode(treasury));
         vm.prank(signer2);
         vm.expectRevert(DCAVaultStorage.WithdrawAddressNotAllowed.selector);
-        vault.approve(id);
+        vault.approve(id, _typeOf(id));
     }
 
     // =================================================================== pause / unpause
@@ -1427,7 +1429,7 @@ contract DCAVaultTest is VaultTestBase {
         uint256 id = vault.proposeUnpause();
         assertTrue(vault.paused(), "one signer cannot unpause alone");
         vm.prank(signer2);
-        vault.approve(id);
+        vault.approve(id, _typeOf(id));
         assertFalse(vault.paused());
     }
 
@@ -1436,7 +1438,7 @@ contract DCAVaultTest is VaultTestBase {
         uint256 id = vault.proposeUnpause();
         vm.prank(signer2);
         vm.expectRevert(DCAVaultStorage.NotPaused.selector);
-        vault.approve(id);
+        vault.approve(id, _typeOf(id));
     }
 
     function test_ProposalsWorkWhilePaused() public {
@@ -1580,7 +1582,7 @@ contract DCAVaultTest is VaultTestBase {
         uint256 id = vault.proposeWithdrawBatch(_addrs(address(0)), amounts, noReceive);
         vm.prank(signer2);
         vm.expectRevert(DCAVaultStorage.NativeTransferFailed.selector);
-        vault.approve(id);
+        vault.approve(id, _typeOf(id));
         assertEq(address(vault).balance, 1 ether);
     }
 
@@ -1599,7 +1601,7 @@ contract DCAVaultTest is VaultTestBase {
         emit DCAVaultStorage.StableTokenChanged(
             address(usdc), address(newStable), address(morpho), address(newVault), 1005e6
         );
-        vault.approve(id);
+        vault.approve(id, _typeOf(id));
 
         assertEq(usdc.balanceOf(treasury), 1005e6, "every unit of old stable swept");
         assertEq(usdc.balanceOf(address(vault)), 0);
@@ -1633,7 +1635,7 @@ contract DCAVaultTest is VaultTestBase {
         usdc.mint(address(vault), 1);
         _deposit(1);
         vm.prank(signer2);
-        vault.approve(id);
+        vault.approve(id, _typeOf(id));
         assertEq(usdc.balanceOf(treasury), 1000e6 + 2);
         assertEq(vault.stableToken(), address(newStable));
     }
@@ -1665,8 +1667,147 @@ contract DCAVaultTest is VaultTestBase {
         _passProposal(DCAVaultStorage.ProposalType.RemoveWithdrawAddress, abi.encode(treasury));
         vm.prank(signer2);
         vm.expectRevert(DCAVaultStorage.WithdrawAddressNotAllowed.selector);
-        vault.approve(id);
+        vault.approve(id, _typeOf(id));
         assertEq(vault.stableToken(), address(usdc));
+    }
+
+    // =================================================================== daily volume cap
+
+    function test_Constructor_SetsDailyVolumeCap() public view {
+        assertEq(vault.dailyVolumeCap(), DAILY_CAP);
+    }
+
+    function test_SetDailyVolumeCap_ViaProposal() public {
+        vm.prank(signer1);
+        uint256 id = vault.proposeSetDailyVolumeCap(600e6);
+        assertEq(vault.dailyVolumeCap(), DAILY_CAP, "one approval is below threshold");
+        vm.prank(signer2);
+        vm.expectEmit(false, false, false, true, address(vault));
+        emit DCAVaultStorage.DailyVolumeCapChanged(DAILY_CAP, 600e6);
+        vault.approve(id, DCAVaultStorage.ProposalType.SetDailyVolumeCap);
+        assertEq(vault.dailyVolumeCap(), 600e6);
+    }
+
+    function test_SetDailyVolumeCap_HelperMatchesPropose() public {
+        vm.prank(signer1);
+        uint256 id = vault.proposeSetDailyVolumeCap(600e6);
+        (DCAVaultStorage.ProposalType t, bytes memory data,,,,,) = vault.getProposal(id);
+        assertEq(uint8(t), uint8(DCAVaultStorage.ProposalType.SetDailyVolumeCap));
+        assertEq(abi.decode(data, (uint256)), 600e6);
+    }
+
+    function test_Revert_Propose_SetDailyVolumeCapBadData() public {
+        vm.prank(signer1);
+        vm.expectRevert(DCAVaultStorage.BadArrayLength.selector);
+        vault.propose(DCAVaultStorage.ProposalType.SetDailyVolumeCap, "");
+        vm.prank(signer1);
+        vm.expectRevert(DCAVaultStorage.BadArrayLength.selector);
+        vault.propose(DCAVaultStorage.ProposalType.SetDailyVolumeCap, abi.encode(uint256(1), uint256(2)));
+    }
+
+    /// @dev Buys count the stable sold (`amountIn`); V3 and V4 share one daily budget.
+    function test_SwapExactInputV3_BuyCountsTowardsDailyCap() public {
+        _setCap(600e6);
+        _deposit(1_000e6);
+        vm.startPrank(operator);
+        vault.swapExactInputV3(address(usdc), address(weth), FEE_LOW, 400e6, 1, block.timestamp);
+        assertEq(vault.dailyVolumeUsed(), 400e6);
+        vault.swapExactInputV4(address(usdc), address(weth), FEE_LOW, TS_LOW, 200e6, 1, block.timestamp);
+        assertEq(vault.dailyVolumeUsed(), 600e6, "exactly the cap is allowed");
+        vm.expectRevert(DCAVaultStorage.DailyVolumeExceeded.selector);
+        vault.swapExactInputV3(address(usdc), address(weth), FEE_LOW, 1, 1, block.timestamp);
+        vm.stopPrank();
+        assertEq(morpho.balanceOf(address(vault)), 400e6, "reverted buy leaves the stable in Morpho");
+    }
+
+    /// @dev Sells count the stable actually received (1 WETH -> 2000 USDC in the mock).
+    function test_SwapExactInputV4_SellCountsStableReceived() public {
+        _setCap(600e6);
+        weth.mint(address(vault), 1 ether);
+        vm.startPrank(operator);
+        vault.swapExactInputV4(address(weth), address(usdc), FEE_LOW, TS_LOW, 0.25 ether, 1, block.timestamp);
+        assertEq(vault.dailyVolumeUsed(), 500e6);
+        vm.expectRevert(DCAVaultStorage.DailyVolumeExceeded.selector);
+        vault.swapExactInputV3(address(weth), address(usdc), FEE_LOW, 0.1 ether, 1, block.timestamp); // +200
+        vm.stopPrank();
+    }
+
+    function test_DailyVolume_ResetsNextUtcDay() public {
+        _setCap(600e6);
+        _deposit(2_000e6);
+        vm.warp(10 days + 1 days - 1); // last second of a UTC day
+        vm.prank(operator);
+        vault.swapExactInputV3(address(usdc), address(weth), FEE_LOW, 600e6, 1, block.timestamp);
+        vm.prank(operator);
+        vm.expectRevert(DCAVaultStorage.DailyVolumeExceeded.selector);
+        vault.swapExactInputV3(address(usdc), address(weth), FEE_LOW, 1e6, 1, block.timestamp);
+
+        vm.warp(block.timestamp + 1); // 00:00 UTC
+        vm.prank(operator);
+        vault.swapExactInputV3(address(usdc), address(weth), FEE_LOW, 600e6, 1, block.timestamp);
+        assertEq(vault.volumeDay(), 11);
+        assertEq(vault.dailyVolumeUsed(), 600e6);
+    }
+
+    function test_SetDailyVolumeCap_ZeroBlocksSwaps() public {
+        _setCap(0);
+        _deposit(100e6);
+        vm.prank(operator);
+        vm.expectRevert(DCAVaultStorage.DailyVolumeExceeded.selector);
+        vault.swapExactInputV3(address(usdc), address(weth), FEE_LOW, 1, 1, block.timestamp);
+    }
+
+    /// @dev Lowering the cap below today's usage blocks further swaps for the rest of the day.
+    function test_SetDailyVolumeCap_LowerThanUsedBlocksRestOfDay() public {
+        _deposit(1_000e6);
+        vm.prank(operator);
+        vault.swapExactInputV3(address(usdc), address(weth), FEE_LOW, 500e6, 1, block.timestamp);
+        _setCap(400e6);
+        vm.prank(operator);
+        vm.expectRevert(DCAVaultStorage.DailyVolumeExceeded.selector);
+        vault.swapExactInputV3(address(usdc), address(weth), FEE_LOW, 1, 1, block.timestamp);
+    }
+
+    /// @dev Cap / usage are in old-stable units: ChangeStableToken zeroes both, swaps wait for a new cap.
+    function test_ChangeStableToken_ResetsDailyVolumeCap() public {
+        _deposit(1_000e6);
+        vm.prank(operator);
+        vault.swapExactInputV3(address(usdc), address(weth), FEE_LOW, 300e6, 1, block.timestamp);
+        MockERC20 newStable = new MockERC20("New USD", "NUSD", 18);
+        MockMorphoVault newVault = _newMorphoVault(newStable);
+        _passProposal(
+            DCAVaultStorage.ProposalType.ChangeStableToken, abi.encode(address(newStable), address(newVault), treasury)
+        );
+        assertEq(vault.dailyVolumeCap(), 0);
+        assertEq(vault.dailyVolumeUsed(), 0);
+    }
+
+    // =================================================================== approve(id, pType)
+
+    function test_Revert_Approve_TypeMismatch() public {
+        vm.prank(signer1);
+        uint256 id = vault.proposeAddWithdrawAddress(makeAddr("cold"));
+        vm.prank(signer2);
+        vm.expectRevert(DCAVaultStorage.ProposalTypeMismatch.selector);
+        vault.approve(id, DCAVaultStorage.ProposalType.WithdrawBatch);
+        assertFalse(vault.hasApproved(id, signer2));
+
+        vm.prank(signer2);
+        vault.approve(id, DCAVaultStorage.ProposalType.AddWithdrawAddress); // = 1
+        assertTrue(vault.isWithdrawAddress(makeAddr("cold")));
+    }
+
+    /// @dev Guards the storage slot used by the `_typeOf` test helper.
+    function test_TypeOfHelper_MatchesGetProposal() public {
+        vm.prank(signer1);
+        uint256 id = vault.proposeSetDailyVolumeCap(1);
+        (DCAVaultStorage.ProposalType t,,,,,,) = vault.getProposal(id);
+        assertEq(uint8(_typeOf(id)), uint8(t));
+        assertEq(uint8(t), 16);
+    }
+
+    function _setCap(uint256 cap) internal {
+        _passProposal(DCAVaultStorage.ProposalType.SetDailyVolumeCap, abi.encode(cap));
     }
 
     function _amounts(uint256 a) internal pure returns (uint256[] memory r) {

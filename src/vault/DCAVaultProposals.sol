@@ -30,8 +30,12 @@ abstract contract DCAVaultProposals is DCAVaultMorpho {
     }
 
     /// @notice Approves a pending proposal; executes it once valid approvals reach the threshold.
+    /// @dev `pType` must equal the stored type, so the signer's wallet shows what kind of proposal is being signed
+    ///      (e.g. `approve(12, 1)` = AddWithdrawAddress) and a front-run that puts another type at id `id` reverts.
     /// @param id proposal id
-    function approve(uint256 id) external onlySigner nonReentrant {
+    /// @param pType expected `ProposalType` of `id` (0 = WithdrawBatch, 1 = AddWithdrawAddress, ... see enum)
+    function approve(uint256 id, ProposalType pType) external onlySigner nonReentrant {
+        if (proposals[id].pType != pType) revert ProposalTypeMismatch();
         _approve(id);
     }
 
@@ -186,6 +190,12 @@ abstract contract DCAVaultProposals is DCAVaultMorpho {
         return _propose(ProposalType.ChangeStableToken, abi.encode(newStable, newVault, to));
     }
 
+    /// @notice Proposes a new daily cap on operator swap volume (buys + sells, in stable units per UTC day).
+    /// @param cap raw stable units (e.g. 600e6 = 600 USDC); 0 blocks every swap
+    function proposeSetDailyVolumeCap(uint256 cap) external onlySigner nonReentrant returns (uint256) {
+        return _propose(ProposalType.SetDailyVolumeCap, abi.encode(cap));
+    }
+
     /// @notice Proposes unpausing operator functions.
     function proposeUnpause() external onlySigner nonReentrant returns (uint256) {
         return _propose(ProposalType.Unpause, "");
@@ -295,6 +305,8 @@ abstract contract DCAVaultProposals is DCAVaultMorpho {
             if (allowed) _checkPoolConfig(token, fee, tickSpacing); // existence (add / remove) checked at execution
         } else if (pType == ProposalType.Unpause) {
             if (data.length != 0) revert BadArrayLength();
+        } else if (pType == ProposalType.SetDailyVolumeCap) {
+            if (data.length != 32) revert BadArrayLength(); // one uint256; any value (0 = no swaps) is valid
         } else {
             address a = abi.decode(data, (address));
             if (a == address(0)) revert ZeroAddress();
@@ -324,6 +336,8 @@ abstract contract DCAVaultProposals is DCAVaultMorpho {
             if (!paused) revert NotPaused();
             paused = false;
             emit Unpaused();
+        } else if (pType == ProposalType.SetDailyVolumeCap) {
+            _setDailyVolumeCap(abi.decode(data, (uint256)));
         } else {
             address a = abi.decode(data, (address));
             if (pType == ProposalType.AddWithdrawAddress) _addWithdrawAddress(a);

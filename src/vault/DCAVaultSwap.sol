@@ -7,7 +7,8 @@ import {DCAVaultMorpho} from "./DCAVaultMorpho.sol";
 /// @title DCAVaultSwap
 /// @notice Shared base of the swap modules: the checks every swap must pass and the post-swap settlement.
 /// @dev `DCAVaultSwapV3` and `DCAVaultSwapV4` both build on this, so V3 and V4 can never drift apart on the
-///      rules (stable side, token whitelist, pool whitelist, deadline, balance-delta output check, sell -> Morpho).
+///      rules (stable side, token whitelist, pool whitelist, deadline, balance-delta output check, daily volume cap,
+///      sell -> Morpho).
 abstract contract DCAVaultSwap is DCAVaultMorpho {
     // ------------------------------------------------------------------
     // Internal
@@ -60,6 +61,8 @@ abstract contract DCAVaultSwap is DCAVaultMorpho {
     ) internal returns (uint256 amountOut) {
         amountOut = _balanceOf(tokenOut) - outBefore;
         if (amountOut < amountOutMinimum) revert InsufficientOutput();
+        // Stable side of the swap: what a buy sold, or what a sell actually received.
+        _useDailyVolume(tokenOut == stableToken ? amountOut : amountIn);
         emit Swapped(tokenIn, tokenOut, fee, amountIn, amountOut, version);
 
         if (tokenOut == stableToken) {

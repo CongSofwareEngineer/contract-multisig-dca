@@ -1,0 +1,12 @@
+# Proposal System
+- **Date**: 2026-10-15
+- **Feature**: proposal-system (→ docs/instruction/proposal-system.md)
+- **Type**: Added, Changed
+- **Files**: `src/vault/DCAVaultProposals.sol`, `src/vault/DCAVaultStorage.sol`, `test/DCAVault.t.sol`, `test/DCAVault.security.t.sol`, `test/DCAVault.fork.t.sol`, `test/helpers/VaultTestBase.sol`
+- **What**:
+  - **Typed approve**: `approve(uint256 id)` → `approve(uint256 id, ProposalType pType)`; reverts `ProposalTypeMismatch` unless `pType` equals the stored type (enum numbers unchanged: 0 = WithdrawBatch, 1 = AddWithdrawAddress, …). The proposer's auto-approve inside `_propose` is unchanged. Breaking ABI change for signer tooling.
+  - **New type `SetDailyVolumeCap` = 16** (appended): payload `uint256 cap`, exactly 32 bytes (`BadArrayLength`), any value (0 = no swaps); helper `proposeSetDailyVolumeCap(cap)`.
+- **Tests**: added `test_Revert_Approve_TypeMismatch`, `test_TypeOfHelper_MatchesGetProposal`, `test_Security_ApproveRejectsSwappedProposalType`; every existing `approve` call now passes the type (test helper `_typeOf(id)` reads it via `vm.load`). `forge test`: 235 passed, 0 failed.
+- **Why**:
+  - Owner request: a hardware wallet only showed `approve(12)`, so signers could not see what they were signing, and a compromised signer could front-run to place a different proposal type at the id the others were told to approve. The type is now part of the signed call.
+  - `SetDailyVolumeCap`: lets signers change the new daily swap cap ([swap-v3](2026-10-15_swap-v3.md)).

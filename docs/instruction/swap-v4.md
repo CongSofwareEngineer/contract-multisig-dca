@@ -1,5 +1,5 @@
 # Swap V4
-> Last updated: 2026-10-09
+> Last updated: 2026-10-15
 
 ## Overview
 Operator swaps through **Uniswap V4** pools, via the UniversalRouter + Permit2. Same rules as V3 (one side must be `stableToken`, output stays in the vault, a buy pulls exactly `amountIn` stable from Morpho in the same tx, a sell to the stable is supplied to Morpho), and the same pool whitelist: `(token, fee, tickSpacing)` must be one entry of `allowedPool` ([swap-v3 §3](swap-v3.md#3-pool-whitelist-allowedpool--shared-with-v4)), with `hooks` always `address(0)`. Unlike V3, V4 can trade **native ETH** (`address(0)`) once it is whitelisted in `allowedToken`.
@@ -8,7 +8,7 @@ Sub-logics:
 2. Changing Permit2 / UniversalRouter
 
 ## Shared
-- Code: `swapExactInputV4`, `_executeV4`, `_buildV4SwapInput` in `src/vault/DCAVaultSwapV4.sol`; shared `_prepareSwap` / `_settleSwap` (same as V3) in the base `src/vault/DCAVaultSwap.sol`; storage, constants, events, errors in `src/vault/DCAVaultStorage.sol`; pool whitelist (`_setAllowedPool`) in `src/vault/DCAVaultRoles.sol`; proposal handlers in `src/vault/DCAVaultProposals.sol`.
+- Code: `swapExactInputV4`, `_executeV4`, `_buildV4SwapInput` in `src/vault/DCAVaultSwapV4.sol`; shared `_prepareSwap` / `_settleSwap` (same as V3, incl. the daily volume cap — [swap-v3 §6](swap-v3.md#6-daily-volume-cap-dailyvolumecap--shared-with-v4)) in the base `src/vault/DCAVaultSwap.sol`; storage, constants, events, errors in `src/vault/DCAVaultStorage.sol`; pool whitelist (`_setAllowedPool`) in `src/vault/DCAVaultRoles.sol`; proposal handlers in `src/vault/DCAVaultProposals.sol`.
 - Storage: `permit2`, `universalRouter` (constructor, non-zero; then only via proposal); pool whitelist `allowedPool` (shared with V3).
 - Constants: `SWAP_VERSION_V4 = 4`, `MIN_TICK_SPACING = 1`, `MAX_TICK_SPACING = 32767` (v4-core bounds). Private: `V4_SWAP = 0x10`, `SWAP_EXACT_IN_SINGLE = 0x06`, `SETTLE_ALL = 0x0c`, `TAKE_ALL = 0x0f`.
 - Events: `Swapped(tokenIn, tokenOut, fee, amountIn, amountOut, 4)`, `Permit2Changed`, `UniversalRouterChanged`.

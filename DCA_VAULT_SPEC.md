@@ -167,7 +167,7 @@ Thay thế cho mô hình EOA hiện tại (approve unlimited cho Uniswap V3 Rout
 
 #### Cơ chế chung
 - `propose(ProposalType, bytes data)` → tạo proposal, người tạo tự động approve.
-- `approve(uint256 id)` → signer khác vote.
+- `approve(uint256 id, ProposalType pType)` → signer khác vote. **`pType` phải đúng loại của proposal `id`**, sai → `ProposalTypeMismatch` (chốt 2026-10-15, owner request). Lý do: ví cứng chỉ hiện `approve(12)` → signer không biết đang ký gì; signer bị lộ key có thể front-run để chiếm đúng id mà người khác được báo là cần approve. Giờ ví hiện `approve(12, 1)` = AddWithdrawAddress. Số = giá trị enum `ProposalType` (0 = WithdrawBatch, 1 = AddWithdrawAddress, … 16 = SetDailyVolumeCap). Swap (`swapExactInputV3/V4`) là hàm operator, không qua vote nên không có type. Lưu ý: chỉ khoá **loại**, không khoá payload — hai proposal cùng loại vẫn phải decode `getProposal(id)` để so `data`.
 - Khi số approve ≥ threshold → **tự động execute**.
 - `cancel(uint256 id)` → `onlySigner`, chỉ người tạo **và người tạo vẫn đang là signer**, khi chưa execute (chốt 2026-10-08: mọi hàm thay đổi state phải check role — signer đã bị xóa không còn quyền gì).
 - Proposal hết hạn sau **7 ngày**.
@@ -208,9 +208,10 @@ Thay thế cho mô hình EOA hiện tại (approve unlimited cho Uniswap V3 Rout
 | `ChangeUniV3Router` | `address` | `!= 0`, `!= router hiện tại`. Không validate on-chain — signers tự kiểm tra trước khi approve (router nhận `tokenIn` khi swap). Không cần migrate allowance vì contract không có standing approval. (chốt 2026-10-08) |
 | `ChangePermit2` | `address` | `!= 0`, `!= hiện tại`. (chốt 2026-10-08) |
 | `ChangeUniversalRouter` | `address` | `!= 0`, `!= hiện tại`. (chốt 2026-10-08) |
-| `ChangeStableToken` | `(address newStable, address newVault, address to)` | `newStable`, `newVault != 0`; `newStable != stableToken`; `newVault != morphoVault`; `newStable` không nằm trong `allowedToken`; `to` trong `isWithdrawAddress`. **Rút sạch rồi mới đổi**: `redeem` toàn bộ shares ở vault cũ → chuyển **toàn bộ** stable cũ (idle + vừa redeem) về `to` → set `stableToken = newStable`, `morphoVault = newVault`. Whitelist pool cũ bị xoá hết (khoá theo `stableEpoch`, §7), kể cả khi sau này đổi về lại stable cũ — phải `SetAllowedPool` lại. Mọi proposal đang chờ bị expire (§5). `newVault` phải là Morpho vault của `newStable` — không validate on-chain. (chốt 2026-10-08) |
+| `SetDailyVolumeCap` | `uint256 cap` | Cap volume swap/ngày của operator, đơn vị raw của stable (vd `600e6` = 600 USDC). Mọi giá trị hợp lệ; `0` = chặn mọi swap. `data` phải đúng 32 byte (`BadArrayLength`). (chốt 2026-10-15) |
+| `ChangeStableToken` | `(address newStable, address newVault, address to)` | `newStable`, `newVault != 0`; `newStable != stableToken`; `newVault != morphoVault`; `newStable` không nằm trong `allowedToken`; `to` trong `isWithdrawAddress`. **Rút sạch rồi mới đổi**: `redeem` toàn bộ shares ở vault cũ → chuyển **toàn bộ** stable cũ (idle + vừa redeem) về `to` → set `stableToken = newStable`, `morphoVault = newVault`. Whitelist pool cũ bị xoá hết (khoá theo `stableEpoch`, §7), kể cả khi sau này đổi về lại stable cũ — phải `SetAllowedPool` lại. Mọi proposal đang chờ bị expire (§5). **`dailyVolumeCap` và `dailyVolumeUsed` reset về 0** (đơn vị stable cũ, decimals có thể khác) → swap bị chặn cho tới khi signers `SetDailyVolumeCap` lại (2026-10-15). `newVault` phải là Morpho vault của `newStable` — không validate on-chain. (chốt 2026-10-08) |
 
-> Enum (16 loại): `SetAllowedPool` = 10, `Unpause` = 11, sau đó 3 loại đổi địa chỉ protocol và `ChangeStableToken` = 15. (2026-10-08: `SetAllowedPool` thay `SetAllowedFee` + `SetAllowedTickSpacing`; chưa deploy nên đổi enum được.)
+> Enum (17 loại): `WithdrawBatch` = 0, `AddWithdrawAddress` = 1, … `SetAllowedPool` = 10, `Unpause` = 11, sau đó 3 loại đổi địa chỉ protocol, `ChangeStableToken` = 15, `SetDailyVolumeCap` = 16 (thêm cuối 2026-10-15). (2026-10-08: `SetAllowedPool` thay `SetAllowedFee` + `SetAllowedTickSpacing`; chưa deploy nên đổi enum được.)
 > Sweep nằm **trong** `ChangeStableToken` (không phải điều kiện "balance = 0" trước khi đổi) để không ai chặn được việc đổi bằng cách gửi 1 wei stable cũ / gọi `depositAndSupply`. Sau khi đổi, stable cũ chỉ là token chưa whitelist (bị bỏ qua như token rác).
 
 > **Không có proposal approve token tùy ý.** Mọi approve chỉ xảy ra atomic bên trong hàm swap/Morpho (approve đúng số → dùng → reset 0). Không tồn tại standing approval → hacker không thể "approve linh tinh".
@@ -265,6 +266,9 @@ bool internal _expectingNative;                 // chỉ true trong swap V4 mua 
 uint64 public stableChangedAt;                  // timestamp lần ChangeStableToken gần nhất;
                                                 // proposal có createdAt <= giá trị này coi như expired (§5.3)
 uint64 public stableEpoch;                      // số lần ChangeStableToken; nằm trong key pool -> đổi stable xoá mọi entry (§7)
+uint256 public dailyVolumeCap;                  // cap volume swap / ngày UTC (mua + bán), raw stable units (§7)
+uint256 public volumeDay;                       // block.timestamp / 1 days của dailyVolumeUsed
+uint256 public dailyVolumeUsed;                 // volume stable đã dùng trong volumeDay
 
 // Proposals
 struct Proposal { ProposalType pType; bytes data; address proposer; uint64 createdAt; bool executed; bool cancelled; }
@@ -274,13 +278,22 @@ mapping(uint256 => mapping(address => bool)) public hasRejected; // mỗi signer
 uint256 public proposalCount;
 ```
 
-Constructor nhận: `stableToken, uniV3Router, permit2, universalRouter, morphoVault, signers[], operators[], withdrawAddresses[], tokens[], pools[]` (`PoolConfig[]`). `tokens[]` là token mua bán, **không chứa stable** (`StableNotTradable`), có thể chứa `address(0)` (ETH native). Validate protocol/stable không `address(0)`, không trùng, signers ≥ 2 (deploy ban đầu tối thiểu 2 signer), signer ∩ operator = ∅. `morphoVault` không được validate on-chain (không check factory / `asset()`); deploy script vẫn pre-flight `asset() == stableToken` off-chain.
+Constructor nhận: `stableToken, uniV3Router, permit2, universalRouter, morphoVault, signers[], operators[], withdrawAddresses[], tokens[], pools[]` (`PoolConfig[]`), `dailyVolumeCap` (raw stable units; deploy script mặc định `600 * 10**decimals` = $600, env `DAILY_VOLUME_CAP`). `tokens[]` là token mua bán, **không chứa stable** (`StableNotTradable`), có thể chứa `address(0)` (ETH native). Validate protocol/stable không `address(0)`, không trùng, signers ≥ 2 (deploy ban đầu tối thiểu 2 signer), signer ∩ operator = ∅. `morphoVault` không được validate on-chain (không check factory / `asset()`); deploy script vẫn pre-flight `asset() == stableToken` off-chain.
 
 ---
 
 ## 7. Giới hạn an toàn cho operator (đã chốt)
 
-**Chỉ dùng whitelist pool `allowedPool`.** Không làm giới hạn số lượng mỗi lệnh/mỗi ngày, không làm TWAP check.
+**Whitelist pool `allowedPool` + cap volume theo ngày `dailyVolumeCap`.** Không cap theo từng lệnh, không TWAP check.
+
+### 7.1 Cap volume theo ngày (chốt 2026-10-15, owner request — thay quyết định "không cap" trước đó)
+- Mỗi swap (V3 lẫn V4, dùng chung 1 quỹ) cộng **phía stable** vào `dailyVolumeUsed`: mua = `amountIn` (USDC bán ra), bán = USDC **thực nhận** (đo balance). Vượt `dailyVolumeCap` → `DailyVolumeExceeded`, cả tx revert (USDC vẫn nằm trong Morpho). Bằng đúng cap thì được.
+- Ngày = ngày UTC (`block.timestamp / 1 days`); sang ngày mới thì `dailyVolumeUsed` tính lại từ 0. (Cửa sổ lịch, không rolling 24h: cuối ngày + đầu ngày hôm sau tối đa 2× cap trong vài phút.)
+- **Đếm cả mua lẫn bán** — đó là thứ chặn kiểu tấn công "cày phí": key operator bị lộ mua/bán qua lại ở giá thị trường (không cần vốn, không lệch giá nên monitor theo giá không bắt được) để đốt vault qua phí pool (LP dải hẹp của kẻ tấn công ăn phí). Giới hạn thiệt hại sandwich **chiều mua** (§16 #1) ở mức ≤ cap/ngày (mua đếm theo `amountIn`). **Chưa chặn được bán bị sandwich**: lệnh bán được đếm theo USDC *nhận về*, nên bán toàn bộ WETH/cbBTC vào pool bị đẩy giá với `minOut = 1` chỉ tính vài đơn vị USDC vào cap (PoC 2026-10-15) — rủi ro mở, xem §16 #1.
+- Mặc định deploy **600 USDC/ngày** (`600e6`). Đổi qua proposal `SetDailyVolumeCap` (đủ threshold); hạ cap dưới mức đã dùng hôm nay → chặn swap tới hết ngày. `0` = chặn mọi swap (khác `pause()`: không cần proposal `Unpause`, nhưng cần threshold).
+- `ChangeStableToken` reset cap + usage về 0 (xem §5.3).
+
+### 7.2 Whitelist pool
 
 - **1 item = 1 pool = `(token, fee, tickSpacing)`** (bên kia luôn là `stableToken`) (chốt 2026-10-08). `tickSpacing = 0` (`V3_POOL`) = pool V3 `(stable, token, fee)`; `tickSpacing >= 1` = pool V4 hookless `(stable, token, fee, tickSpacing)`. Signers nhập số dễ đọc, không cần tự tìm poolId / address pool — contract tự suy ra pool.
 - Lý do: 2 whitelist độc lập (fee, tickSpacing) cho phép operator ghép chéo (vd USDC/WETH `500/60`) thành pool không có thật; tạo pool V4 là permissionless → key operator bị lộ có thể tự tạo pool giá lệch, thanh khoản bụi, rồi swap toàn bộ vault vào với `minOut = 1` (rút cạn mà không cần vốn). Whitelist theo từng pool chặn đường này.
@@ -316,6 +329,7 @@ UniversalRouterChanged(address oldRouter, address newRouter)
 StableTokenChanged(address oldStable, address newStable, address oldMorphoVault, address newMorphoVault, uint256 sweptAmount)
 TokenAllowed(address token, bool allowed)
 PoolAllowed(address stable, address token, uint24 fee, int24 tickSpacing, bool allowed)
+DailyVolumeCapChanged(uint256 oldCap, uint256 newCap)
 Paused(address indexed by)
 Unpaused()
 ```
@@ -329,6 +343,7 @@ Unpaused()
 - `allowedPool(token, fee, tickSpacing)` → pool `(stableToken hiện tại, token, fee, tickSpacing)` có được swap không. Luôn đọc theo epoch **hiện tại**: entry thêm trước lần `ChangeStableToken` gần nhất (kể cả khi đổi về lại stable cũ) hoặc trước lần `RemoveToken` gần nhất của token đó không tính. Không có list on-chain — dựng lại từ event `PoolAllowed` (§7, §8)
 - `getProposal(id)` → type, data, số vote hợp lệ hiện tại, threshold, executed, cancelled, expired
 - `getRejections(id)` → số reject hợp lệ hiện tại
+- `dailyVolumeCap()`, `volumeDay()`, `dailyVolumeUsed()` → bot tự tính phần còn lại hôm nay: `volumeDay == now / 1 days ? cap - used : cap`
 
 ---
 
@@ -347,6 +362,8 @@ Unpaused()
 11. Chỉ stable nạp vào được qua `depositAndSupply`. Mọi hàm swap/withdraw revert với token không phải `stableToken` / ngoài `allowedToken`.
 12. Token rác bị `transfer` thẳng vào contract **không làm bất kỳ hàm nào revert hay thay đổi hành vi** (test: transfer token ERC20 giả có `transfer`/`balanceOf` revert vào contract, rồi chạy lại toàn bộ flow chính).
 13. Caller là EOA đã gắn delegation EIP-7702 (code `0xef0100 || impl`) **không gọi được bất kỳ hàm thay đổi state nào** (`DelegatedCaller`). Lý do: với 7702, key operator bị lộ chạy được code riêng với `msg.sender = operator` → gói flash loan → đẩy giá pool → vault swap `minOut = 1` → back-run vào **1 tx**: không cần vốn, signer không kịp `pause()`. (2026-10-08)
+14. Tổng volume stable swap của operator (mua + bán, V3 + V4) trong 1 ngày UTC **không bao giờ > `dailyVolumeCap`** (`DailyVolumeExceeded`). (2026-10-15)
+15. `approve(id, pType)` revert `ProposalTypeMismatch` nếu `pType` khác loại đã lưu của proposal `id` — không vote được nhầm loại proposal. (2026-10-15)
 
 ---
 
@@ -405,7 +422,8 @@ Chạy test fork: `forge test --fork-url $BASE_RPC_URL -vvv`
 ## 13. Sau khi deploy — checklist vận hành
 
 1. Verify contract trên basescan.
-2. Kiểm tra `getSigners()`, operators, withdraw addresses, tokens, fees, `morphoVault` đúng như mong muốn.
+2. Kiểm tra `getSigners()`, operators, withdraw addresses, tokens, fees, `morphoVault`, `dailyVolumeCap()` (= `600000000` = 600 USDC) đúng như mong muốn.
+   Bot phải tự tính phần cap còn lại trong ngày trước khi gửi swap (§7.1). Signer ký `approve(id, pType)` với đúng số type (§5.3) và vẫn decode `getProposal(id)` để kiểm tra payload.
 3. Nạp một ít ETH (~0.01–0.02 ETH) vào **ví operator** để trả gas.
 4. Chủ dự án gọi `stable.approve(vault, amount)` (USDC) rồi `depositAndSupply(amount)` từ ví chính → kiểm tra shares trên Morpho.
 5. Test 1 lệnh mua nhỏ (vd 5 USDC → WETH) bằng operator.
@@ -447,7 +465,7 @@ Các quyết định chi tiết khi code, không đổi hành vi chính của sp
 
 Owner đã xem xét và **chọn giữ nguyên** theo spec. Ghi lại để audit / vận hành biết:
 
-1. **Operator bị hack có thể phá giá trị qua sandwich.** Contract chỉ check `amountOutMinimum > 0`. Kẻ có key operator có thể bơm giá một pool **đã whitelist** rồi gọi `swapExactInputV3/V4(USDC → token, toàn bộ USDC, minOut = 1)` (hoặc bán toàn bộ WETH/cbBTC) và back-run → token không "rời" contract trực tiếp nhưng phần lớn giá trị bị lấy. Cần vốn thật để đẩy giá pool sâu — điều này chỉ đúng vì operator **không gọi được từ ví 7702** (bất biến #13, 2026-10-08): EOA thường không gom flash loan + đẩy giá + swap vault + back-run vào 1 tx được, nên phải dùng vốn thật qua nhiều tx và chịu rủi ro bị arbitrage chen giữa. Không có check này, flash loan (Morpho Blue phí 0) + 7702 cho phép rút gần hết vault trong 1 tx mà không cần vốn, bất kể TVL pool. Biến thể rẻ hơn (tự tạo pool rồi route vào) đã bị chặn bởi whitelist theo từng pool (§7, 2026-10-08) — với điều kiện signers chỉ whitelist pool có thật, có thanh khoản. Biện pháp hiện tại: signer `pause()` ngay khi phát hiện, giữ ít operator, monitor `Swapped` event. Phương án nếu cần sau: TWAP check on-chain hoặc cap theo ngày.
+1. **Operator bị hack có thể phá giá trị qua sandwich.** Contract chỉ check `amountOutMinimum > 0`. Kẻ có key operator có thể bơm giá một pool **đã whitelist** rồi gọi `swapExactInputV3/V4(USDC → token, toàn bộ USDC, minOut = 1)` (hoặc bán toàn bộ WETH/cbBTC) và back-run → token không "rời" contract trực tiếp nhưng phần lớn giá trị bị lấy. Cần vốn thật để đẩy giá pool sâu — điều này chỉ đúng vì operator **không gọi được từ ví 7702** (bất biến #13, 2026-10-08): EOA thường không gom flash loan + đẩy giá + swap vault + back-run vào 1 tx được, nên phải dùng vốn thật qua nhiều tx và chịu rủi ro bị arbitrage chen giữa. Không có check này, flash loan (Morpho Blue phí 0) + 7702 cho phép rút gần hết vault trong 1 tx mà không cần vốn, bất kể TVL pool. Biến thể rẻ hơn (tự tạo pool rồi route vào) đã bị chặn bởi whitelist theo từng pool (§7, 2026-10-08) — với điều kiện signers chỉ whitelist pool có thật, có thanh khoản. Biện pháp hiện tại: **cap volume theo ngày** (§7.1, 2026-10-15 — chặn "cày phí" mua/bán qua lại và sandwich **chiều mua** ở ≈ `dailyVolumeCap`/ngày. **Chiều bán chưa được chặn**: bán bị sandwich nhận về gần 0 USDC nên gần như không tính vào cap → kẻ có key operator vẫn bán được toàn bộ WETH/cbBTC với `minOut = 1` trong 1 lệnh — chờ owner chọn cách sửa), signer `pause()` ngay khi phát hiện, giữ ít operator, monitor `Swapped` event. Phương án nếu cần sau: TWAP check on-chain.
 2. **`ChangeMorphoVault` all-or-nothing.** Nếu vault cũ pause / thiếu thanh khoản / bị hack, `redeem` toàn bộ revert → không đổi vault được; `depositAndSupply` và lệnh bán vẫn đẩy USDC vào vault cũ. Biện pháp: signer `pause()` để chặn bán ra USDC; chờ vault cũ có thanh khoản.
 3. **2 signer → threshold 1.** Một signer bị lộ key là tự mình làm được mọi thứ (AddWithdrawAddress + WithdrawBatch, AddSigner, ChangeUniV3Router sang router độc…). Khuyến nghị deploy ≥ 3 signer (threshold 2).
 4. **Proposal `Unpause` cũ còn hạn** (tạo trong lần pause trước) vẫn approve được trong lần pause sau. Signers nên `cancel` / `reject` các proposal `Unpause` thừa.

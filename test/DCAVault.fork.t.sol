@@ -93,7 +93,17 @@ contract DCAVaultForkTest is Test {
         pools[5] = DCAVaultStorage.PoolConfig(address(0), 500, 10);
 
         vault = new DCAVault(
-            USDC, ROUTER, PERMIT2, UNIVERSAL_ROUTER, STEAKHOUSE_USDC, signers, operators, withdraws, tokens, pools
+            USDC,
+            ROUTER,
+            PERMIT2,
+            UNIVERSAL_ROUTER,
+            STEAKHOUSE_USDC,
+            signers,
+            operators,
+            withdraws,
+            tokens,
+            pools,
+            100_000e6
         );
 
         deal(USDC, user, 10_000e6);
@@ -193,7 +203,7 @@ contract DCAVaultForkTest is Test {
         vm.prank(signer1);
         uint256 id = vault.proposeWithdrawBatch(tokens, amounts, treasury);
         vm.prank(signer2);
-        vault.approve(id);
+        vault.approve(id, DCAVaultStorage.ProposalType.WithdrawBatch);
 
         assertEq(IERC20(USDC).balanceOf(treasury), 2_000e6);
         assertEq(IERC20(WETH).balanceOf(treasury), weth);
@@ -208,7 +218,7 @@ contract DCAVaultForkTest is Test {
         vm.prank(signer1);
         uint256 id = vault.proposeWithdrawBatch(tokens, amounts, treasury);
         vm.prank(signer3);
-        vault.approve(id);
+        vault.approve(id, DCAVaultStorage.ProposalType.WithdrawBatch);
 
         assertEq(IERC4626(STEAKHOUSE_USDC).balanceOf(address(vault)), 0);
         assertApproxEqAbs(IERC20(USDC).balanceOf(treasury), 10_000e6, 2);
@@ -221,7 +231,7 @@ contract DCAVaultForkTest is Test {
         vm.prank(signer1);
         uint256 id = vault.proposeChangeMorphoVault(GAUNTLET_USDC_PRIME);
         vm.prank(signer2);
-        vault.approve(id);
+        vault.approve(id, DCAVaultStorage.ProposalType.ChangeMorphoVault);
 
         assertEq(vault.morphoVault(), GAUNTLET_USDC_PRIME);
         assertEq(IERC4626(STEAKHOUSE_USDC).balanceOf(address(vault)), 0);
@@ -297,7 +307,7 @@ contract DCAVaultForkTest is Test {
         vm.prank(signer1);
         uint256 id = vault.proposeAddToken(address(0));
         vm.prank(signer2);
-        vault.approve(id);
+        vault.approve(id, DCAVaultStorage.ProposalType.AddToken);
     }
 
     /// @dev The cross combos of whitelisted fees / spacings (e.g. USDC/WETH 500/60) are not real pools; anyone

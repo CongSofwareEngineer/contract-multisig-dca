@@ -1,5 +1,5 @@
 # Deployment
-> Last updated: 2026-10-09
+> Last updated: 2026-10-15
 
 ## Overview
 Constructor arguments, the deploy script, address verification and the post-deploy checklist.
@@ -11,17 +11,18 @@ Sub-logics:
 5. Source layout
 
 ## 1. Constructor
-`DCAVault(stableToken, uniV3Router, permit2, universalRouter, morphoVault, signers[], operators[], withdrawAddresses[], tokens[], pools[])`
-Validates: stable and all protocol addresses non-zero (`morphoVault` is **not** checked further on-chain — the deploy script pre-flights `asset() == stableToken`); signers ≥ 2, non-zero, unique; operators non-zero, unique, not signers; withdraw addresses non-zero, unique; `tokens[]` = **tradable tokens only**: unique, must **not** contain the stable (`StableNotTradable`), may contain `address(0)` (native ETH, V4 only); `pools[]` = `PoolConfig{token, fee, tickSpacing}` entries, unique, validated as in [swap-v3 §3](swap-v3.md#3-pool-whitelist-allowedpool--shared-with-v4) (tickSpacing 0 = V3 pool, ≥ 1 = hookless V4 pool).
+`DCAVault(stableToken, uniV3Router, permit2, universalRouter, morphoVault, signers[], operators[], withdrawAddresses[], tokens[], pools[], dailyVolumeCap)`
+Validates: stable and all protocol addresses non-zero (`morphoVault` is **not** checked further on-chain — the deploy script pre-flights `asset() == stableToken`); signers ≥ 2, non-zero, unique; operators non-zero, unique, not signers; withdraw addresses non-zero, unique; `tokens[]` = **tradable tokens only**: unique, must **not** contain the stable (`StableNotTradable`), may contain `address(0)` (native ETH, V4 only); `pools[]` = `PoolConfig{token, fee, tickSpacing}` entries, unique, validated as in [swap-v3 §3](swap-v3.md#3-pool-whitelist-allowedpool--shared-with-v4) (tickSpacing 0 = V3 pool, ≥ 1 = hookless V4 pool); `dailyVolumeCap` = max operator swap volume per UTC day in raw stable units, not validated ([swap-v3 §6](swap-v3.md#6-daily-volume-cap-dailyvolumecap--shared-with-v4)).
 No protocol address is hardcoded in the contract.
 
 ## 2. Deploy script
 `script/Deploy.s.sol` reads everything from env (template: `.env.example`):
-`STABLE_TOKEN, TOKENS, UNI_V3_ROUTER, PERMIT2, UNIVERSAL_ROUTER, MORPHO_VAULT, SIGNERS, OPERATORS, WITHDRAW_ADDRESSES, UNI_V3_FACTORY, POOL_TOKENS, POOL_FEES, POOL_TICK_SPACINGS, PRIVATE_KEY_DEPLOYER`.
+`STABLE_TOKEN, TOKENS, UNI_V3_ROUTER, PERMIT2, UNIVERSAL_ROUTER, MORPHO_VAULT, SIGNERS, OPERATORS, WITHDRAW_ADDRESSES, UNI_V3_FACTORY, POOL_TOKENS, POOL_FEES, POOL_TICK_SPACINGS, PRIVATE_KEY_DEPLOYER`, optional `DAILY_VOLUME_CAP`.
+`DAILY_VOLUME_CAP` = raw stable units; unset → `600 * 10**STABLE_TOKEN.decimals()` = 600 USDC (`600000000`). Printed in the dry-run log.
 `STABLE_TOKEN` = USDC. `TOKENS` = tradable tokens (default `WETH,cbBTC`); append `0x0000000000000000000000000000000000000000` to also whitelist native ETH.
 Pool whitelist = three parallel lists, entry i = (`POOL_TOKENS[i]`, `POOL_FEES[i]`, `POOL_TICK_SPACINGS[i]`), tick spacing 0 = V3. Default: V3 USDC/WETH 500, V3 USDC/cbBTC 500, V4 USDC/WETH 500/10 and 3000/60, V4 USDC/cbBTC 500/10. Only list pools that exist with liquidity.
 Lists are comma-separated without spaces. `OPERATORS` may be empty; `WITHDRAW_ADDRESSES` must not be.
-Contract runtime size: 24,120 B (456 B under the EIP-170 limit of 24,576 B) — any new logic must be size-checked (`forge build --sizes`).
+Contract runtime size: 23,739 B (837 B under the EIP-170 limit of 24,576 B; modifier bodies are internal functions `_checkSigner` / `_checkOperator` to keep it there) — any new logic must be size-checked (`forge build --sizes`).
 Pre-flight: requires chainId 8453, code at every address (except `address(0)` in `TOKENS`), `STABLE_TOKEN` not in `TOKENS`, Morpho asset == `STABLE_TOKEN`, `POOL_*` lists of equal length, every V3 pool entry exists (`UNI_V3_FACTORY.getPool(stable, token, fee) != 0`); prints the full config. V4 pool entries are not checked by the script — verify them on a fork first.
 ```bash
 cp .env.example .env   # fill in, never commit
@@ -46,7 +47,7 @@ forge script script/Deploy.s.sol --rpc-url $BASE_RPC_URL --broadcast --verify
 The checks above were done via RPC; still cross-check on basescan.org before mainnet broadcast.
 
 ## 4. Post-deploy checklist
-Spec §13: verify on basescan → check `getSigners()`, operators, withdraw addresses, `stableToken`, tradable tokens (`getAllowedTokens()`), fees, `morphoVault` → fund operator with ~0.01–0.02 ETH → small `depositAndSupply` → small buy (e.g. 5 USDC → WETH) → `pause()` + `Unpause` proposal → small `WithdrawBatch` → revoke the old EOA unlimited approvals → start the bot.
+Spec §13: verify on basescan → check `getSigners()`, operators, withdraw addresses, `stableToken`, tradable tokens (`getAllowedTokens()`), fees, `morphoVault`, `dailyVolumeCap()` (= `600000000` for 600 USDC) → fund operator with ~0.01–0.02 ETH → small `depositAndSupply` → small buy (e.g. 5 USDC → WETH) → `pause()` + `Unpause` proposal → small `WithdrawBatch` → revoke the old EOA unlimited approvals → start the bot.
 
 **A third-party audit is required before significant funds.** Start with small amounts.
 
@@ -58,7 +59,7 @@ Spec §13: verify on basescan → check `getSigners()`, operators, withdraw addr
 |---|---|
 | `src/DCAVault.sol` | Final contract: constructor seeds signers / operators / withdraw addresses / tokens / pools (`PoolConfig[]`). |
 | `src/vault/DCAVaultStorage.sol` | Types, constants (incl. `NATIVE = address(0)`), **all** state (incl. `stableToken`, `morphoVault`, `uniV3Router`, `permit2`, `universalRouter`, changeable only by proposal), events, errors, modifiers; base constructor sets stable + protocol addresses (non-zero check only). |
-| `src/vault/DCAVaultRoles.sol` | Role / whitelist setters, `getSigners`, `getAllowedTokens`, `allowedPool`, `getThreshold`. |
+| `src/vault/DCAVaultRoles.sol` | Role / whitelist setters, daily volume cap (`_setDailyVolumeCap`, `_useDailyVolume`), `getSigners`, `getAllowedTokens`, `allowedPool`, `getThreshold`. |
 | `src/vault/DCAVaultMorpho.sol` | Morpho deposit / withdraw / migration, `ChangeStableToken`, `totalStable`, `getBalances`, native-aware `_balanceOf` / `_sendToken`. |
 | `src/vault/DCAVaultSwap.sol` | Base of the swap modules: `_prepareSwap` (shared rules + Morpho pull on a buy) + `_settleSwap` (balance-delta output, `Swapped`, sell → Morpho). |
 | `src/vault/DCAVaultSwapV3.sol` | V3 swaps via SwapRouter02: `swapExactInputV3` (buy and sell). |

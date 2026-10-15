@@ -1,5 +1,5 @@
 # Swap V3
-> Last updated: 2026-10-09
+> Last updated: 2026-10-15
 
 ## Overview
 Operator swaps via Uniswap V3 SwapRouter02 `exactInputSingle`. Output always lands in the vault.
@@ -10,13 +10,14 @@ Sub-logics:
 3. Pool whitelist (`allowedPool`) — shared with V4
 4. Atomic approvals & output measurement
 5. Changing the router (`ChangeUniV3Router`)
+6. Daily volume cap (`dailyVolumeCap`) — shared with V4
 
 ## Shared
 - Code: `src/vault/DCAVaultSwapV3.sol` (`swapExactInputV3`); `_prepareSwap` (checks + Morpho pull on a buy) and post-swap `_settleSwap`, shared with V4, live in the base `src/vault/DCAVaultSwap.sol`; pool whitelist setter `_setAllowedPool` / `_checkPoolConfig` in `src/vault/DCAVaultRoles.sol`.
 - Storage `uniV3Router` (constructor, then only via a `ChangeUniV3Router` proposal), `_allowedPool[_poolId(token, fee, tickSpacing)]` (+ `stableEpoch`, `_tokenEpoch`), `stableToken`, `allowedToken`.
 - Event `UniV3RouterChanged(oldRouter, newRouter)`; error `SameAddress`.
 - Event `Swapped(tokenIn, tokenOut, fee, amountIn, amountOut, version)` — `version = SWAP_VERSION_V3 = 3`; `MorphoWithdrawn(assets, shares)` on a buy, `MorphoDeposited` on a sell.
-- Errors: `TokenNotAllowed`, `PairNotAllowed`, `NativeNotSupported`, `ZeroAmount`, `DeadlinePassed`, `PoolNotAllowed`, `InsufficientBalance`, `InsufficientOutput`.
+- Errors: `TokenNotAllowed`, `PairNotAllowed`, `NativeNotSupported`, `ZeroAmount`, `DeadlinePassed`, `PoolNotAllowed`, `InsufficientBalance`, `InsufficientOutput`, `DailyVolumeExceeded` (§6).
 
 ## 1. swapExactInputV3
 ### Entry points
@@ -28,12 +29,12 @@ Sub-logics:
    Then `amountIn <= balance(tokenIn)` (`InsufficientBalance` — reachable for sells; a buy always has exactly `amountIn` after the withdraw).
 2. Snapshot `balance(tokenOut)`.
 3. `forceApprove(router, amountIn)` → `exactInputSingle({recipient: address(this), sqrtPriceLimitX96: 0, ...})` → `forceApprove(router, 0)`.
-4–6. `_settleSwap` (shared with V4): `amountOut = balance(tokenOut) after − before`; require `>= amountOutMinimum`; emit `Swapped`;
+4–6. `_settleSwap` (shared with V4): `amountOut = balance(tokenOut) after − before`; require `>= amountOutMinimum`; add the stable side (buy: `amountIn`, sell: `amountOut`) to today's volume, revert `DailyVolumeExceeded` past the cap (§6); emit `Swapped`;
    if `tokenOut == stableToken` (sell): `_supplyToMorpho(amountOut)` + emit `MorphoDeposited`. Only the proceeds are supplied; pre-existing idle stable is untouched.
 ### Security
 - Invariant #2: `recipient` hardcoded. Invariant #3: approve exact → reset 0.
 - The router's return value is not trusted; output is measured by balance delta (catches a lying router).
-- Slippage is the bot's responsibility (QuoterV2 off-chain); the contract only enforces `amountOutMinimum > 0`. **Accepted risk:** a stolen operator key can sandwich the vault's own swaps (`minOut = 1`), but only with real capital across several txs because 7702-delegated callers are rejected — see [security-safety §5](security-safety.md#5-accepted-risks).
+- Slippage is the bot's responsibility (QuoterV2 off-chain); the contract only enforces `amountOutMinimum > 0`. **Accepted risk:** a stolen operator key can sandwich the vault's own swaps (`minOut = 1`), but only with real capital across several txs because 7702-delegated callers are rejected, and a sandwiched **buy** spends at most `dailyVolumeCap` of stable per day (§6); a sandwiched **sell** is not bounded by the cap — see [security-safety §5](security-safety.md#5-accepted-risks).
 - The stable-side rule + the pool whitelist (§3) limit the operator to exactly the pools the signers listed — it cannot route through a pool it created itself.
 ### Edge cases
 - SwapRouter02 on Base has **no `deadline`** field; the vault checks it.
@@ -66,7 +67,7 @@ Swaps: V3 checks `_allowedPool[_poolId(token, fee, V3_POOL)]`; V4 rejects `tickS
 - **Signers must only list pools that already exist with real liquidity.** A listed-but-missing pool can still be created and seeded by anyone. The deploy script checks every V3 entry exists (`UNI_V3_FACTORY.getPool`); V4 entries must be checked on a fork / the Uniswap UI.
 - Adding a pool does not require the token to be in `allowedToken` yet (swaps check both), so `AddToken` and `SetAllowedPool` can be proposed in parallel. **`RemoveToken` kills the token's pool entries for good** (bumps `_tokenEpoch[token]`): a later `AddToken` opens no pool until signers re-vet and list each pool again — a stale entry could point at a pool that lost its liquidity meanwhile (cheap to manipulate with a leaked operator key). (`test_Security_RemoveTokenThenAddTokenDoesNotRevivePools`)
 - **`ChangeStableToken` drops every entry** ([morpho-integration §5](morpho-integration.md#5-changestabletoken)): it bumps `stableEpoch`, so every old entry dies and the `(newStable, token)` pools — which nobody vetted and may not even exist yet (a stolen operator key could create and seed one) — are never swappable until signers list them again with `SetAllowedPool` — and a `SetAllowedPool` proposed before the switch is expired, so it can't land under the new stable either. Switching back to an old stable does **not** revive its old entries (`test_Security_ChangeStableTokenBackDoesNotReviveOldPools`).
-- No per-tx / per-day caps, no TWAP check (by design, spec §7) — sandwich on a listed pool remains an accepted risk ([security-safety §5](security-safety.md#5-accepted-risks)).
+- No per-tx cap, no TWAP check (by design, spec §7); total volume per day is capped (§6) — sandwich on a listed pool remains a risk: bounded by the cap for buys only ([security-safety §5](security-safety.md#5-accepted-risks)).
 ### Edge cases
 - Default list (`.env.example`, checked on a Base fork 2026-10-08): V3 USDC/WETH 500, V3 USDC/cbBTC 500, V4 USDC/WETH 500/10 and 3000/60, V4 USDC/cbBTC 500/10. Native ETH: add `(address(0), 500, 10)` together with `AddToken(address(0))`.
 - WETH/cbBTC pools exist but are never usable — stable-side rule (`PairNotAllowed`).
@@ -87,6 +88,27 @@ Proposal `ChangeUniV3Router(address newRouter)` / `proposeChangeUniV3Router` —
 - Operators / outsiders cannot propose or vote; one signer below threshold cannot change it (`test_Security_ChangeProtocolAddressesNeedThreshold`).
 ### Edge cases
 - The new router must use the SwapRouter02 `ExactInputSingleParams` (no `deadline` field); a SwapRouter V1-style router would make every swap revert (nothing lost — just pause / change back).
+
+## 6. Daily volume cap (`dailyVolumeCap`) — shared with V4
+### Purpose
+Bounds how much value a leaked operator key can burn per day. The pool whitelist alone does not stop two cheap attacks: (a) **fee churn** — buy/sell back and forth at fair prices, paying pool fees each time (collected by the attacker's own tight-range LP), with no capital, no price deviation for a price monitor to spot, and hundreds of txs per minute on Base; (b) **sandwich** on a listed pool. The cap bounds (a) and buy-side (b), because buys count the stable sold. **Sells are not bounded**: a sell counts the stable *received*, so dumping all WETH / cbBTC into a pushed pool with `minOut = 1` uses only a few raw units of the cap (PoC 2026-10-15) — open risk, see [security-safety §5](security-safety.md#5-accepted-risks).
+### Entry points
+- Constructor `_dailyVolumeCap` (raw stable units; deploy script default `600 * 10**decimals` = 600 USDC = `600e6`, env `DAILY_VOLUME_CAP`).
+- Proposal `SetDailyVolumeCap(uint256 cap)` / helper `proposeSetDailyVolumeCap(cap)` — `onlySigner`, threshold. Payload must be exactly 32 bytes (`BadArrayLength`). Any value is valid; `0` blocks every swap.
+- Views: `dailyVolumeCap()`, `volumeDay()`, `dailyVolumeUsed()`. Remaining today = `volumeDay == block.timestamp / 1 days ? cap - used : cap` (a lowered cap can be below `used` → 0 left).
+- Event `DailyVolumeCapChanged(oldCap, newCap)` (constructor, proposal, and `ChangeStableToken` → 0). Error `DailyVolumeExceeded`.
+### Flow
+In `_settleSwap` (every V3 and V4 swap, after the output check): `amount` = the stable side — `amountIn` for a buy (stable sold), the measured `amountOut` for a sell (stable received). `_useDailyVolume(amount)`: `day = block.timestamp / 1 days`; `used = (day == volumeDay ? dailyVolumeUsed : 0) + amount`; `used > dailyVolumeCap` → revert `DailyVolumeExceeded`; else store `volumeDay = day`, `dailyVolumeUsed = used`.
+### Security
+- **Both directions count** — counting only buys would leave the churn loop open. V3 and V4 share one budget.
+- A swap that would exceed the cap reverts as a whole: on a buy the stable stays in Morpho.
+- `ChangeStableToken` sets the cap and today's usage to 0 (amounts are in old-stable units; decimals may differ), so swaps are blocked until signers pass a `SetDailyVolumeCap` for the new stable ([morpho-integration §5](morpho-integration.md#5-changestabletoken)).
+- Invariant #14 (`test_Security_OperatorChurnBoundedByDailyCap`).
+### Edge cases
+- Calendar UTC day, not a rolling 24 h window: up to 2× the cap can move around 00:00 UTC.
+- Reaching the cap exactly is allowed; one more unit reverts.
+- Lowering the cap below today's usage blocks swaps until the next UTC day.
+- The bot should read the remaining budget before sizing a swap (a revert only wastes gas).
 
 ## Related
 - [morpho-integration.md](morpho-integration.md)

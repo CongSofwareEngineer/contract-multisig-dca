@@ -3,6 +3,7 @@ pragma solidity ^0.8.24;
 
 import {Script, console2} from "forge-std/Script.sol";
 import {IERC4626} from "@openzeppelin/contracts/interfaces/IERC4626.sol";
+import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 import {DCAVault} from "../src/DCAVault.sol";
 import {DCAVaultStorage} from "../src/vault/DCAVaultStorage.sol";
 
@@ -32,6 +33,10 @@ contract Deploy is Script {
 
         DCAVaultStorage.PoolConfig[] memory pools = _envPools();
 
+        // Max operator swap volume per UTC day (buys + sells), raw stable units. Default: 600 whole stable ($600).
+        uint256 dailyVolumeCap =
+            vm.envOr("DAILY_VOLUME_CAP", 600 * 10 ** uint256(IERC20Metadata(stableToken).decimals()));
+
         // Pre-flight: every protocol/token address must have code, and Morpho must be a vault for the stable.
         _requireCode(stableToken, "STABLE_TOKEN");
         for (uint256 i; i < tokens.length; ++i) {
@@ -56,6 +61,7 @@ contract Deploy is Script {
         }
 
         _print(stableToken, router, permit2, universalRouter, morphoVault, signers, operators, withdrawAddresses);
+        console2.log("DAILY_VOLUME_CAP", dailyVolumeCap);
         for (uint256 i; i < tokens.length; ++i) {
             console2.log("token    ", tokens[i]);
         }
@@ -76,7 +82,8 @@ contract Deploy is Script {
             operators,
             withdrawAddresses,
             tokens,
-            pools
+            pools,
+            dailyVolumeCap
         );
         vm.stopBroadcast();
 
