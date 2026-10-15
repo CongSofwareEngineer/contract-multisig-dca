@@ -110,7 +110,7 @@ These are the §10 invariants of the spec. Every one needs a test in
 5. `signers.length` is **never < `MIN_SIGNERS = 2`**.
 6. Votes from an address that is no longer a signer **do not count** — re-count valid
    votes at execute time.
-7. An expired (> 7 days, or created at/before the last `ChangeStableToken`), executed or cancelled proposal
+7. An expired (> 1 day, or created at/before the last `ChangeStableToken`), executed or cancelled proposal
    can never execute.
 8. While `paused`, every operator function reverts. One signer can pause immediately;
    unpausing requires a threshold `Unpause` proposal.

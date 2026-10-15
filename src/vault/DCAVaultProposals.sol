@@ -213,7 +213,7 @@ abstract contract DCAVaultProposals is DCAVaultMorpho {
     /// @return threshold current threshold
     /// @return executed whether it has executed
     /// @return cancelled whether it was cancelled
-    /// @return expired whether the 7-day window has passed
+    /// @return expired whether the 1-day window has passed
     function getProposal(uint256 id)
         external
         view
@@ -438,7 +438,7 @@ abstract contract DCAVaultProposals is DCAVaultMorpho {
         if (_isExpired(p)) revert ProposalExpired();
     }
 
-    /// @dev Expired = past the 7-day window, or created at / before the last `ChangeStableToken` (its payload was
+    /// @dev Expired = past the 1-day window, or created at / before the last `ChangeStableToken` (its payload was
     ///      vetted against the old stable). `<=` also drops proposals created later in the same block — re-propose.
     function _isExpired(Proposal storage p) internal view returns (bool) {
         uint256 createdAt = p.createdAt;

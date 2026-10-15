@@ -422,7 +422,7 @@ contract DCAVaultSecurityTest is VaultTestBase {
     function test_Invariant7_ExpiredCannotExecute() public {
         vm.prank(signer1);
         uint256 id = vault.proposeAddWithdrawAddress(attacker);
-        vm.warp(block.timestamp + 7 days + 1);
+        vm.warp(block.timestamp + 1 days + 1);
         vm.prank(signer2);
         vm.expectRevert(DCAVaultStorage.ProposalExpired.selector);
         vault.approve(id, _typeOf(id));

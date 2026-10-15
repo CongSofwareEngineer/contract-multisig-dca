@@ -12,7 +12,7 @@ Sub-logics:
 ## Shared
 - Code: `src/vault/DCAVaultProposals.sol` (pause, propose / approve / cancel, `_validate`, `_execute`, `_withdrawBatch`); `ProposalType` / `Proposal` in `src/vault/DCAVaultStorage.sol`.
 - Storage: `proposals[id]` (`pType, data, proposer, createdAt, executed, cancelled`), `hasApproved[id][signer]`, `hasRejected[id][signer]`, `proposalCount`.
-- Constant: `PROPOSAL_TTL = 7 days`.
+- Constant: `PROPOSAL_TTL = 1 days` (24 h).
 - Events: `ProposalCreated(id, pType, proposer)`, `ProposalApproved(id, signer)`, `ProposalRejected(id, signer)`, `ProposalExecuted(id)`, `ProposalCancelled(id)`.
 - Errors: `ProposalNotFound`, `ProposalAlreadyExecuted`, `ProposalIsCancelled`, `ProposalExpired`, `AlreadyApproved`, `AlreadyVoted`, `NotProposer`, `ProposalTypeMismatch`.
 - Functions `propose`, `approve`, helpers are `onlySigner nonReentrant` (execution may call Morpho / tokens). `reject` and `cancel` are `onlySigner` (no external calls). Every state-changing proposal function checks the signer role — a removed signer has no power left over any proposal, including their own.
@@ -36,7 +36,7 @@ Invariant #7: expired / executed / cancelled (by proposer or by ≥ 50% rejectio
 ### Edge cases
 - Proposals (incl. `WithdrawBatch`) work while paused.
 - Several proposals can be pending at the same time; creating one never affects the others.
-- A proposal is executable up to and including `createdAt + 7 days`; one second later it is expired.
+- A proposal is executable up to and including `createdAt + 1 days`; one second later it is expired.
 - **Stable change expires everything pending**: `ChangeStableToken` sets `stableChangedAt = block.timestamp`; every proposal with `createdAt <= stableChangedAt` is expired (`ProposalExpired` on approve / reject, `expired = true` in `getProposal`). Its payload was vetted against the old stable — e.g. a pending `SetAllowedPool(WETH, 500, 10)` meant for USDC/WETH would otherwise whitelist the unvetted newStable/WETH pool, and a pending `ChangeMorphoVault` would point the new stable at a USDC vault. Proposals created in the same block as the switch are expired too; re-propose in a later block. `cancel` still works on them (housekeeping). See [morpho-integration §5](morpho-integration.md#5-changestabletoken).
 
 ## 2. Vote counting, expiry & rejection
@@ -44,7 +44,7 @@ Invariant #7: expired / executed / cancelled (by proposer or by ≥ 50% rejectio
 - **Cancelling someone else's proposal needs ≥ 50% "no" votes**: valid rejections ≥ `getThreshold()` (2→1, 3→2, 4→2, 5→3). One signer alone can never cancel another signer's proposal (except with 2 signers, where 1 is already the threshold for everything) — neither by rejecting nor by creating new proposals.
 - The proposer can still withdraw their **own** proposal with `cancel(id)`; this cannot affect anyone else's proposal.
 - With 4 signers, 2 approvals execute and 2 rejections cancel — whichever is reached first wins (each signer votes only once).
-- Edge cases: a removed-then-re-added signer's old `hasApproved` / `hasRejected` flags count again on proposals that are still pending. Older pending proposals (e.g. an `Unpause` created before an emergency pause) stay usable for 7 days unless they are rejected or cancelled by the proposer.
+- Edge cases: a removed-then-re-added signer's old `hasApproved` / `hasRejected` flags count again on proposals that are still pending. Older pending proposals (e.g. an `Unpause` created before an emergency pause) stay usable for 1 day unless they are rejected or cancelled by the proposer.
 
 ## 3. Proposal types and payloads
 Each handler re-validates against live state at execute time (state may have changed since propose).

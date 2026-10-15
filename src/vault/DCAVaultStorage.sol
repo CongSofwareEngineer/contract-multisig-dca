@@ -58,7 +58,7 @@ abstract contract DCAVaultStorage is ReentrancyGuard {
     /// @notice Signer count can never drop below this.
     uint256 public constant MIN_SIGNERS = 2;
     /// @notice A proposal can only be approved / executed within this window after creation.
-    uint256 public constant PROPOSAL_TTL = 7 days;
+    uint256 public constant PROPOSAL_TTL = 1 days;
     /// @notice `version` value emitted in `Swapped` for Uniswap V3 swaps.
     uint8 public constant SWAP_VERSION_V3 = 3;
     /// @notice `version` value emitted in `Swapped` for Uniswap V4 swaps.

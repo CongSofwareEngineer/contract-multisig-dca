@@ -754,7 +754,7 @@ contract DCAVaultTest is VaultTestBase {
     function test_Revert_Approve_Expired() public {
         vm.prank(signer1);
         uint256 id = vault.proposeAddOperator(makeAddr("x"));
-        vm.warp(block.timestamp + 7 days + 1);
+        vm.warp(block.timestamp + 1 days + 1);
         (,,,,,, bool expired) = vault.getProposal(id);
         assertTrue(expired);
         vm.prank(signer2);
@@ -762,11 +762,11 @@ contract DCAVaultTest is VaultTestBase {
         vault.approve(id, _typeOf(id));
     }
 
-    function test_Approve_ExactlySevenDaysStillValid() public {
+    function test_Approve_ExactlyOneDayStillValid() public {
         address x = makeAddr("x");
         vm.prank(signer1);
         uint256 id = vault.proposeAddOperator(x);
-        vm.warp(block.timestamp + 7 days);
+        vm.warp(block.timestamp + 1 days);
         vm.prank(signer2);
         vault.approve(id, _typeOf(id));
         assertTrue(vault.isOperator(x));
@@ -902,7 +902,7 @@ contract DCAVaultTest is VaultTestBase {
     function test_Revert_Reject_Expired() public {
         vm.prank(signer1);
         uint256 id = vault.proposeAddOperator(makeAddr("x"));
-        vm.warp(block.timestamp + 7 days + 1);
+        vm.warp(block.timestamp + 1 days + 1);
         vm.prank(signer2);
         vm.expectRevert(DCAVaultStorage.ProposalExpired.selector);
         vault.reject(id);
