@@ -170,10 +170,10 @@ Thay thế cho mô hình EOA hiện tại (approve unlimited cho Uniswap V3 Rout
 - `approve(uint256 id, ProposalType pType)` → signer khác vote. **`pType` phải đúng loại của proposal `id`**, sai → `ProposalTypeMismatch` (chốt 2026-10-15, owner request). Lý do: ví cứng chỉ hiện `approve(12)` → signer không biết đang ký gì; signer bị lộ key có thể front-run để chiếm đúng id mà người khác được báo là cần approve. Giờ ví hiện `approve(12, 1)` = AddWithdrawAddress. Số = giá trị enum `ProposalType` (0 = WithdrawBatch, 1 = AddWithdrawAddress, … 16 = SetDailyVolumeCap). Swap (`swapExactInputV3/V4`) là hàm operator, không qua vote nên không có type. Lưu ý: chỉ khoá **loại**, không khoá payload — hai proposal cùng loại vẫn phải decode `getProposal(id)` để so `data`.
 - Khi số approve ≥ threshold → **tự động execute**.
 - `cancel(uint256 id)` → `onlySigner`, chỉ người tạo **và người tạo vẫn đang là signer**, khi chưa execute (chốt 2026-10-08: mọi hàm thay đổi state phải check role — signer đã bị xóa không còn quyền gì).
-- Proposal hết hạn sau **7 ngày**.
+- Proposal hết hạn sau **1 ngày** (24h, đổi từ 7 ngày — chốt 2026-10-15, owner request).
 - **`ChangeStableToken` làm mọi proposal cũ hết hạn** (chốt 2026-10-08): set `stableChangedAt = block.timestamp`; proposal có `createdAt <= stableChangedAt` coi như expired (`ProposalExpired`). Lý do: payload đã được kiểm tra theo stable cũ (vd `SetAllowedPool` cũ sẽ mở pool `(stableMới, token)` chưa ai kiểm tra; `ChangeMorphoVault` cũ trỏ stable mới vào vault USDC). Proposal tạo cùng block với lần đổi cũng hết hạn → tạo lại ở block sau.
 - `reject(uint256 id)` → signer vote **không đồng ý** (chốt 2026-10-08). Khi số reject hợp lệ ≥ threshold (≥ 50% signers hiện tại, cùng công thức `getThreshold()`) → proposal bị **hủy** (`cancelled = true`, emit `ProposalCancelled`), không bao giờ dùng lại được. Reject cũng đếm lại theo signer hiện tại.
-- Proposal của người khác **chỉ bị hủy khi ≥ 50% signers reject** → 1 signer không thể spam hủy. Tạo proposal mới **không ảnh hưởng** proposal đang chờ (nhiều proposal chờ song song, mỗi cái tối đa 7 ngày).
+- Proposal của người khác **chỉ bị hủy khi ≥ 50% signers reject** → 1 signer không thể spam hủy. Tạo proposal mới **không ảnh hưởng** proposal đang chờ (nhiều proposal chờ song song, mỗi cái tối đa 1 ngày).
 - Mỗi signer chỉ vote 1 lần / proposal: **hoặc approve hoặc reject** (`AlreadyVoted`). Người tạo đã tự approve nên không reject được — muốn rút proposal của mình thì dùng `cancel`.
 - **Khi execute, đếm lại số vote của các address hiện vẫn là signer** (vote của signer đã bị xóa không được tính).
 - Helper `proposeXxx(...)` phải gọi hàm **internal** `_propose`, **KHÔNG dùng `this.propose(...)`** (sẽ làm `msg.sender` thành chính contract).
@@ -229,7 +229,7 @@ Thay thế cho mô hình EOA hiện tại (approve unlimited cho Uniswap V3 Rout
 ```solidity
 // Constants
 uint256 public constant MIN_SIGNERS = 2;          // signers.length không bao giờ < 2
-uint256 public constant PROPOSAL_TTL = 7 days;    // cửa sổ approve / execute
+uint256 public constant PROPOSAL_TTL = 1 days;    // cửa sổ approve / execute
 uint8   public constant SWAP_VERSION_V3 = 3;      // field `version` của event Swapped
 uint8   public constant SWAP_VERSION_V4 = 4;
 int24   public constant V3_POOL = 0;              // PoolConfig.tickSpacing = 0 -> pool V3
@@ -355,7 +355,7 @@ Unpaused()
 4. Token chỉ ra ngoài qua `WithdrawBatch` (hoặc sweep của `ChangeStableToken`) đã đủ vote, và chỉ về `isWithdrawAddress`. (Ngoại lệ: `ChangeMorphoVault` gửi stable vào vault mới, và swap gửi `tokenIn` vào router — các địa chỉ này chỉ đổi được qua proposal đủ threshold; signers chịu trách nhiệm kiểm tra trước khi approve.)
 5. Số signer **không bao giờ < 2**.
 6. Vote của signer đã bị xóa không được tính.
-7. Proposal hết hạn (quá 7 ngày, hoặc tạo trước lần `ChangeStableToken` gần nhất) / đã execute / đã cancel không thể execute.
+7. Proposal hết hạn (quá 1 ngày, hoặc tạo trước lần `ChangeStableToken` gần nhất) / đã execute / đã cancel không thể execute.
 8. Khi `paused`, mọi hàm operator revert. 1 signer pause được ngay; unpause chỉ qua proposal.
 9. Không có hàm `delegatecall`, `selfdestruct`, hay gọi địa chỉ tùy ý với calldata tùy ý.
 10. Contract **từ chối ETH**, trừ đúng lúc swap V4 mua ETH native (`receive()` chỉ mở khi `_expectingNative`); không có `fallback`. Router đẩy ETH vào lúc swap khác → revert.
